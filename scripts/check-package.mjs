@@ -14,6 +14,25 @@ const run = (command, args, cwd) =>
 
 try {
   // Build happens before this check. Test the actual tarball, not a workspace link.
+  const workspaceTarballs = [];
+  for (const name of ["core", "backend-webxr", "backend-vio-lite", "renderer-three"]) {
+    const [pack] = JSON.parse(
+      run(
+        npm,
+        ["pack", "--ignore-scripts", "--json", "--pack-destination", temporary],
+        join(root, "packages", name),
+      ),
+    );
+    assert(
+      pack.files.every((f) =>
+        /^(package\.json|README\.md|CHANGELOG\.md|LICENSE|dist\/[^.].*)$/.test(f.path),
+      ),
+      `Unexpected workspace contents: ${name}`,
+    );
+    for (const required of ["LICENSE", "dist/index.js", "dist/index.d.ts"])
+      assert(pack.files.some((f) => f.path === required));
+    workspaceTarballs.push(join(temporary, pack.filename));
+  }
   const [packed] = JSON.parse(
     run(npm, ["pack", "--ignore-scripts", "--json", "--pack-destination", temporary], root),
   );
@@ -49,6 +68,7 @@ try {
       "--no-audit",
       "--no-fund",
       "--package-lock=false",
+      ...workspaceTarballs,
       join(temporary, packed.filename),
     ],
     consumer,
@@ -57,12 +77,16 @@ try {
   // A browser library must also be safe to import while rendering a website on a server.
   run(
     process.execPath,
-    ["--input-type=module", "--eval", `await import(${JSON.stringify(manifest.name)});`],
+    [
+      "--input-type=module",
+      "--eval",
+      `for (const name of ${JSON.stringify(["@arquiveapp/spatial", "@arquiveapp/spatial-core", "@arquiveapp/spatial-backend-webxr", "@arquiveapp/spatial-backend-vio-lite", "@arquiveapp/spatial-renderer-three"])}) await import(name);`,
+    ],
     consumer,
   );
   await writeFile(
     join(consumer, "consumer.ts"),
-    `import * as spatial from ${JSON.stringify(manifest.name)};\nvoid spatial;\n`,
+    `import {probe, type CapabilityReport} from ${JSON.stringify(manifest.name)};\nconst result: Promise<CapabilityReport> = probe(); void result;\n`,
   );
 
   const tsc = join(root, "node_modules", "typescript", "bin", "tsc");

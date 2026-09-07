@@ -33,7 +33,15 @@ actual licence files when reviewing changes; metadata alone is not proof.
 
 Before shipping any third-party runtime, record its exact source/version, full transitive and
 compiled dependency chain, licence files, notices, modifications, source delivery requirements,
-and effect on proprietary downstream integration. No candidate tracking engine is pre-approved.
+and effect on proprietary downstream integration. No external candidate tracking engine is pre-approved.
+
+## M0 local rights gate
+
+See [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) for exact development-tool evidence,
+optional platform limits, the pinned Emscripten diagnostic and proposed future dependencies.
+`npm run check:rights` enforces the reviewed lockfile and licence/notice hashes locally;
+`npm run sbom` emits CycloneDX. There is no hosted SBOM workflow.
+The monorepo adds only original internal packages, no new third-party npm dependencies.
 
 Keep customer assets and their rights separate from the library's code licence. Do not infer
 that a public source repository grants rights to third-party brands, datasets or model assets.

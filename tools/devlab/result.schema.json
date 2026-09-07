@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Spatial unreviewed lab export",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "kind",
+    "build",
+    "device",
+    "startedAt",
+    "endedAt",
+    "physicalEvidence",
+    "outcome",
+    "metrics"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "kind": {
+      "enum": ["webxr", "capture", "patch"]
+    },
+    "physicalEvidence": {
+      "const": false
+    },
+    "outcome": {
+      "const": "unreviewed"
+    },
+    "build": {
+      "type": "object",
+      "required": ["commit", "dirty"],
+      "properties": {
+        "commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "dirty": {
+          "type": "boolean"
+        }
+      }
+    },
+    "device": {
+      "type": "object",
+      "required": ["model", "osBuild", "browserBuild"],
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "osBuild": {
+          "type": "string",
+          "minLength": 1
+        },
+        "browserBuild": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "endedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "metrics": {
+      "type": ["object", "null"]
+    },
+    "scaleMode": {
+      "enum": ["metric", "assumed"]
+    }
+  }
+}

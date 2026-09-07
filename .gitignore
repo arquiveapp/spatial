@@ -7,3 +7,6 @@ coverage/
 .env
 .env.*
 !.env.example
+
+tools/devlab/generated/
+tools/devlab/results/

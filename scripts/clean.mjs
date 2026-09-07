@@ -1,4 +1,11 @@
 import { rm } from "node:fs/promises";
-
-// Only remove this repository's generated build output.
-await rm(new URL("../dist/", import.meta.url), { recursive: true, force: true });
+// Only generated package outputs owned by this repository.
+for (const path of [
+  "dist",
+  "packages/core/dist",
+  "packages/backend-webxr/dist",
+  "packages/backend-vio-lite/dist",
+  "packages/renderer-three/dist",
+]) {
+  await rm(new URL(`../${path}/`, import.meta.url), { recursive: true, force: true });
+}

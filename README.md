@@ -1,76 +1,71 @@
 # ARchive Spatial
 
-An open-source browser AR library in early research and development.
+Framework-neutral browser AR research library. **M0 foundations and M1 lab experiments are
+implemented; production AR sessions, renderer adapters and device support are not.** No npm
+release exists. Every package remains private and every device row remains untested.
 
-**This repository currently contains package infrastructure only. There is no AR implementation,
-public runtime API, published npm release, or verified device support yet.**
+## Current API
 
-The intended package name is `@arquiveapp/spatial`. Ownership of the npm scope must still be
-verified; the GitHub organization does not grant npm publishing rights. `private: true` blocks
-accidental publication during this stage. This does not make the GitHub repository private.
+The unpublished `@arquiveapp/spatial` façade re-exports the dependency-free
+`@arquiveapp/spatial-core` capability probe:
 
-## Direction
+```ts
+import { probe } from "@arquiveapp/spatial";
+const capabilities = await probe();
+// Inspect capabilities.webxr.immersiveAr and capabilities.camera.
+// capabilities.support is always "untested"; detection is not physical validation.
+```
 
-- A reusable library, independent of any company's backend, framework or model catalogue.
-- Processing on the visitor's device, with no mandatory vendor-operated service.
-- Consumers supply model assets through their own applications and hosting.
-- Target custom in-browser experiences on iOS and Android; exact support remains to be researched
-  and validated on physical devices.
-- Permissive downstream use is a design requirement, not an assumption about future dependencies.
+Importing allocates no camera, renderer, listener, timer or Worker and is safe in Node/SSR.
+`probe()` checks API presence, known permission policies and `isSessionSupported('immersive-ar')`.
+It never requests camera/motion permission. Camera `available` means the API exists in a secure
+context, not that permission is granted or a camera works. Policy and rejected XR queries remain
+explicitly unknown. Worker-only capture availability cannot be determined without starting a
+Worker and remains unknown. No browser name decides support.
 
-No tracking engine, renderer, sensor implementation or model format contract has been selected.
+## Local development
 
-## Development
-
-Use Node.js 24 (see `.nvmrc`) and npm 11.19.0. Tooling requires Node.js 22.13 or newer.
+Use Node.js 24 (`.nvmrc`) and npm 11.19.0; tools require Node >=22.13.
 
 ```sh
 npm ci
 npm run check
+npm run build:wasm  # Docker required; digest-pinned Emscripten 6.0.2
+npm run test:wasm
+npm run devlab     # http://127.0.0.1:4178
 ```
 
-Use the documented npm version for reproducible lockfile changes. No application server or
-service credentials are needed for package development.
+`check` runs formatting, rights, strict types, builds, behavioral tests, publint and installation
+of all five real tarballs into an isolated consumer. Both NodeNext and Bundler declarations and
+browser-free ESM imports are tested. `npm run sbom` emits the installed npm CycloneDX inventory.
+WASM tests are a separate explicit local gate; npm pack does not invoke Docker or publish.
 
-| Command             | Purpose                                                                         |
-| ------------------- | ------------------------------------------------------------------------------- |
-| `npm run build`     | Clean generated output and compile ESM JavaScript plus TypeScript declarations. |
-| `npm run typecheck` | Check strict TypeScript types without emitting files.                           |
-| `npm run format`    | Format source and documentation.                                                |
-| `npm run check`     | Formatting, types, build, package lint and real tarball consumer checks.        |
-| `npm run test`      | Build and test installation/import of the packaged artifact.                    |
-| `npm pack`          | Produce a local npm-compatible `.tgz`; does not publish.                        |
+The lab provides an Android WebXR cube, camera/Worker/SIMD measurements and a throwaway gyro +
+planar patch diagnostic. Read [the lab procedure](docs/validation.md) before using its results.
+The current capture experiment uses the ImageBitmap/canvas path; preferred TrackProcessor paths
+remain pending. Synthetic tests do not validate iOS capture, gyro axes, tracking or thermal use.
 
-All checks run locally. There is no GitHub Actions or other CI/CD workflow. These are tooling
-checks, not browser or AR compatibility tests.
+Physical phones require consumer-controlled HTTPS hosting. Loopback HTTP works only on the
+same machine; the server binds to loopback and has a narrow static-file allowlist. No tunnel,
+hosted service, certificate bypass or public deployment is configured.
 
-## Layout
+## Packages and boundaries
 
-```text
-src/index.ts                  Reserved package entry point; currently exports no API
-scripts/                      Build cleanup and packaged-consumer checks
-docs/                         Decisions, dependency rights and release requirements
-```
+| Workspace                              | Current behavior                                                   |
+| -------------------------------------- | ------------------------------------------------------------------ |
+| `@arquiveapp/spatial`                  | Compatibility façade for `probe()`                                 |
+| `@arquiveapp/spatial-core`             | Permission-free capability detection; zero dependencies            |
+| `@arquiveapp/spatial-backend-webxr`    | Reserved, exports nothing until M1 physical gates pass             |
+| `@arquiveapp/spatial-backend-vio-lite` | Reserved, exports nothing; M1 prototype lives outside distribution |
+| `@arquiveapp/spatial-renderer-three`   | Reserved, exports nothing; three.js not installed yet              |
 
-The initial packaging format is ESM with declarations. CommonJS is not advertised. Build output
-is generated in `dist/`; only that output, the README, changelog, licence and package metadata enter the
-tarball. A consumer installation is tested independently of this checkout, including ESM import
-without browser globals and TypeScript resolution in NodeNext and Bundler modes.
+Core imports no backend or renderer. Original code is MIT. Third-party tooling keeps its own
+notices. Model geometry delivered to a browser is extractable; the library promises no protection.
+No native viewer handoff, accounts, telemetry, licence checks or automatic camera uploads.
+Orientation-only viewing is not AR. The patch prototype uses assumed scale, never metric scale.
 
-## Contributing and licensing
-
-Read [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md) before implementation.
-Original repository code is [MIT licensed](LICENSE). No third-party runtime is shipped yet.
-Third-party components retain their own licences; MIT here never overrides their conditions.
-
-See [dependency rights](docs/dependencies.md), [current decisions](docs/decisions.md) and
-[release preparation](docs/releasing.md).
-
-## Maintenance workflow
-
-Maintainers develop on `main`; releases are selected commits marked with annotated version tags.
-No permanent release branches or CI/CD. Versions and npm channels are selected locally following
-[the maintenance policy](docs/maintenance.md); [CHANGELOG.md](CHANGELOG.md) records consumer changes.
-
-The root [AGENTS.md](AGENTS.md) routes tasks to scoped guides. `CLAUDE.md` files import those same
-instructions; see [how instructions are maintained](docs/agent-instructions.md).
+[Decisions](docs/decisions.md) · [Dependency rights](docs/dependencies.md) ·
+[Support matrix](SUPPORT_MATRIX.md) · [Limitations](KNOWN_LIMITATIONS.md) ·
+[Maintenance](docs/maintenance.md) · [Release gates](docs/releasing.md).
+Maintainers work on main with local checks. No CI/CD, release tag or npm publication is authorized
+by ordinary implementation work. npm scope ownership remains unverified.

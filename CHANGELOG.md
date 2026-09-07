@@ -11,4 +11,13 @@ by [the maintenance policy](https://github.com/arquiveapp/spatial/blob/main/docs
 - Packed-consumer checks and narrow distribution contents.
 - Main-based local release/versioning guidance and scoped agent instructions.
 
-The scaffold does not yet implement AR or expose a public runtime API.
+- Unpublished core, WebXR, vio-lite and renderer workspaces; Spatial keeps its original package
+  name and re-exports the prompt-free `probe()` capability API.
+- Local rights inventory/hash gate and digest-pinned base/SIMD diagnostic builds.
+- M1 device lab: WebXR cube, ImageBitmap/canvas capture metrics, experimental gyro/planar patch
+  fit and explicit local JSON export; synthetic tests are not physical evidence.
+- Untested support matrix, known limitations and physical qualification procedure.
+
+No production AR session/renderer API, physical support claim, release or npm publication.
+No existing public export was removed. Reserved backend workspaces remain unavailable until M1
+physical gates pass; TrackProcessor capture and reference measurement tooling remain pending.

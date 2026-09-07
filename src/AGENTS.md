@@ -15,4 +15,5 @@ Applies to `src/`. Read the root instructions first.
   browser/toolchain requirements as compatibility concerns; follow `../docs/maintenance.md`.
 - Add behavioral tests when implementing behavior. Package tests establish packaging only;
   physical AR claims require device/OS/browser evidence and documented limitations.
-- No runtime engine is selected yet. Record dependency provenance and rights before introducing one.
+- WebXR and a new experimental planar engine are the accepted directions. No production backend
+  is implemented yet. Record exact dependency provenance and rights before introducing one.

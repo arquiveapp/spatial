@@ -1,6 +1,2 @@
-/**
- * Reserved public package entry point.
- * No AR API or tracking backend is selected or implemented yet.
- * Importing the package must not access browser globals or start a session.
- */
-export {};
+export { probe } from "@arquiveapp/spatial-core";
+export type { CapabilityReport, Availability } from "@arquiveapp/spatial-core";

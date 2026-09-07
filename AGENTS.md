@@ -1,8 +1,8 @@
 # Spatial — repository rules and map
 
-Standalone public browser AR library; currently a package scaffold. Read
-[decisions](docs/decisions.md) for implemented versus planned work. Do not select or implement
-an AR engine without the implementation task establishing that scope.
+Standalone public browser AR library. M0 foundations and M1 experiments are in scope; read
+[decisions](docs/decisions.md) and [validation gates](docs/validation.md) before expanding it.
+Do not start M2 or claim physical support without the required M1 device evidence.
 
 ## Rules for every change
 
@@ -22,6 +22,9 @@ an AR engine without the implementation task establishing that scope.
 
 | Work                                           | Instructions / source of truth                   |
 | ---------------------------------------------- | ------------------------------------------------ |
+| Workspace packages                             | [packages/AGENTS.md](packages/AGENTS.md)         |
+| Lab and rights tools                           | [tools/AGENTS.md](tools/AGENTS.md)               |
+| Native experiments                             | [native/AGENTS.md](native/AGENTS.md)             |
 | Runtime, public API, types                     | [src/AGENTS.md](src/AGENTS.md)                   |
 | Scripts, package metadata, lockfile or tooling | [scripts/AGENTS.md](scripts/AGENTS.md)           |
 | Documentation or agent instructions            | [docs/AGENTS.md](docs/AGENTS.md)                 |

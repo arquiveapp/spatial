@@ -1,13 +1,16 @@
 # Local releases from main
 
-Current status: no npm release. The package is an empty scaffold with `private: true`.
+Current status: no npm release. All workspace packages remain unpublished with `private: true`; only capability detection is public.
 The intended name is `@arquiveapp/spatial`; npm scope access is not yet verified.
 This runbook is for an explicitly requested release, not instructions to publish during maintenance.
 Read [maintenance](maintenance.md) for version/channel decisions and main-only policy.
 
 ## Before enabling the first release
 
+- Pass G1/G2 and the M2 device cleanup/denied-permission gates in [validation](validation.md).
 - Implement useful behavior and document the public contract and actual support limits.
+- Select the workspace packages to release, update their internal version references and verify
+  every exact tarball. The root façade depends on core; do not publish it before core is available.
 - Finish the shipped-dependency rights review, including required notices/source delivery.
 - Verify npm scope permissions independently of GitHub access. Local `npm login`/2FA handles
   authentication; never store tokens or recovery codes in the repository.

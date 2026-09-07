@@ -1,6 +1,6 @@
 # Contributing
 
-Spatial is in the research and packaging stage. Start with [AGENTS.md](AGENTS.md), then read
+Spatial has M0 foundations and M1 lab experiments. Start with [AGENTS.md](AGENTS.md), then read
 [current decisions](docs/decisions.md). Propose substantial tracking or licensing changes with
 their evidence and consumer implications before implementation.
 
@@ -15,5 +15,5 @@ Contributions to original code are made under the repository's MIT licence. Incl
 and materials you have the right to contribute, retaining third-party notices. Do not attach
 private camera recordings or customer models to public issues without permission.
 
-The current checks validate the package. Future AR changes need reproducible behavior tests and
+The current checks validate packaging, capability behavior and synthetic diagnostics. AR changes need
 physical-device evidence for any compatibility claim. Report device, OS, browser and limitations.
