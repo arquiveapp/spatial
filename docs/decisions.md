@@ -18,7 +18,7 @@ The final handoff's stricter prerequisite (both G1 and G2) resolves the M2 table
   experimental research direction; neither selection establishes device support.
 - Emscripten 6.0.2 is verified and pinned by manifest digest. Base/SIMD diagnostic WASM is built
   locally from original source; no prebuilt binaries enter Git or npm artifacts.
-- OpenCV 4.13.0, Eigen 3.4.0, Sophus, wasm-feature-detect and three.js are proposed future
+- OpenCV 4.13.0, Eigen 3.4.0, Sophus and wasm-feature-detect are proposed future
   dependencies, not adopted, audited shipping components. The M1 kernel and diagnostic need
   none of them. Rights review must precede adding them. No production tracking code is present.
 - Stage 2, relocalisation, threaded WASM, WebGPU, image targets, framework bindings, hosted
@@ -41,3 +41,12 @@ negative-path test, not a failed G1 device test. Untested G2 is neither pass nor
 fallback-only policy applies if G2/G3 actually fail after measurement.
 
 The milestones and evidence requirements are maintained in [validation](validation.md).
+
+## Authorized phone-lab extension — 2026-09-07
+
+The user explicitly requested phone-accessible local testing using existing apartment GLBs and
+returning results to this Mac. Added an optional temporary HTTPS tunnel, private local fixture
+configuration, a three.js lab viewer/experimental WebXR model path and explicit diagnostic POST.
+These live under tools/devlab and remain outside all library tarballs. They do not implement or
+promote the M2 renderer package. Camera/IMU tracking and physical support gates remain unchanged.
+See [mobile lab](mobile-lab.md) for the scoped transport exception and result workflow.

@@ -19,6 +19,14 @@
   fixed-pose substitute. Native XR permission and actual plane/anchor behavior need phones.
 - Lab resources stop on Stop, page hide, backgrounding and orientation changes. Twenty-cycle
   physical camera/GPU/Worker leak and interruption tests remain pending.
-- Only metric/pose JSON is exported on click. It is unreviewed and cannot automatically become
+- Only structured diagnostic JSON is exported or sent to the local receiver on click. It is unreviewed and cannot automatically become
   device evidence. Camera recordings and ground truth are not captured by this implementation.
 - npm scope ownership/publication and runtime integration into ARchive are out of scope.
+
+## Phone lab extension
+
+A three.js GLB viewer and WebXR model-placement experiment now exist in the local lab only;
+public session/renderer packages remain unimplemented. The temporary HTTPS link requires the Mac,
+cloudflared and internet to remain available. Model originals and received reports stay outside
+Git/npm. The report button sends structured diagnostics/comments only, and never promotes support.
+A successful 3D load is not iPhone world-tracking evidence. See [phone workflow](docs/mobile-lab.md).

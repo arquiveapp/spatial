@@ -7,6 +7,10 @@ by [the maintenance policy](https://github.com/arquiveapp/spatial/blob/main/docs
 
 ### Added
 
+- Phone-test laboratory with optional temporary HTTPS access, local-only GLB fixtures, explicit
+  non-AR viewer/experimental WebXR model placement, and receipt-based diagnostic submission to
+  the Mac. No camera uploads or changes to the public renderer API.
+
 - Local TypeScript/ESM package scaffold and declaration generation.
 - Packed-consumer checks and narrow distribution contents.
 - Main-based local release/versioning guidance and scoped agent instructions.

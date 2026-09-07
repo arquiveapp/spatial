@@ -1,9 +1,11 @@
 import { probe } from "/packages/core/dist/index.js";
 import { Metrics } from "./metrics.mjs";
+import { containedRect } from "./video-rect.mjs";
 import { startXR } from "./webxr.mjs";
 const $ = (id) => document.getElementById(id),
   status = (text) => {
     $("status").textContent = text;
+    window.dispatchEvent(new CustomEvent("spatial-lab-status", { detail: { message: text } }));
   };
 let active = null,
   report = null,
@@ -53,9 +55,11 @@ function stop(reason = "Stopped") {
   buttons.forEach((id) => ($(id).disabled = false));
   status(reason);
   render();
+  window.dispatchEvent(new CustomEvent("spatial-lab-finished", { detail: report }));
 }
 function begin(kind) {
   stop();
+  window.dispatchEvent(new CustomEvent("spatial-lab-start", { detail: { kind } }));
   const run = {
     controller: new AbortController(),
     kind,
@@ -251,8 +255,14 @@ async function capture(patch) {
         const marker = $("marker");
         marker.hidden = t.state !== "tracking" || !t.screen;
         if (!marker.hidden) {
-          marker.style.left = `${(t.screen[0] / 640) * 100}%`;
-          marker.style.top = `${(t.screen[1] / 360) * 100}%`;
+          const content = containedRect(
+            video.getBoundingClientRect(),
+            video.videoWidth,
+            video.videoHeight,
+          );
+          const box = $("preview").getBoundingClientRect();
+          marker.style.left = `${content.left - box.left + (t.screen[0] / 640) * content.width}px`;
+          marker.style.top = `${content.top - box.top + (t.screen[1] / 360) * content.height}px`;
         }
         status(
           t.state === "tracking"
@@ -316,7 +326,18 @@ async function capture(patch) {
       "click",
       (e) => {
         if (patch) {
-          const b = video.getBoundingClientRect();
+          const b = containedRect(
+            video.getBoundingClientRect(),
+            video.videoWidth,
+            video.videoHeight,
+          );
+          if (
+            e.clientX < b.left ||
+            e.clientX > b.left + b.width ||
+            e.clientY < b.top ||
+            e.clientY > b.top + b.height
+          )
+            return;
           worker.postMessage({
             type: "place",
             point: [(e.clientX - b.left) / b.width, (e.clientY - b.top) / b.height],
@@ -381,35 +402,6 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("orientationchange", () => stop("Orientation changed; restart required"));
 screen.orientation?.addEventListener("change", () => stop("Orientation changed; restart required"));
-$("export").onclick = () => {
-  if (!report) return;
-  const device = {
-    model: $("device").value.trim(),
-    osBuild: $("os").value.trim(),
-    browserBuild: $("browser").value.trim(),
-  };
-  if (Object.values(device).some((v) => !v)) {
-    status("Enter exact device, OS and browser builds before exporting.");
-    return;
-  }
-  const result = {
-    ...report,
-    device,
-    observations: $("notes").value,
-    physicalEvidence: false,
-    outcome: "unreviewed",
-  };
-  const url = URL.createObjectURL(
-    new Blob([JSON.stringify(result, null, 2)], { type: "application/json" }),
-  );
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `spatial-${report.kind}-${Date.now()}.json`;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  status("Measurements downloaded. Physical evidence requires manual review and ground truth.");
-};
-
 // Explicit synthetic browser check: no device data, camera or support evidence.
 $("synthetic").onclick = async () => {
   const button = $("synthetic");
@@ -466,3 +458,12 @@ $("synthetic").onclick = async () => {
     button.disabled = false;
   }
 };
+
+export function getLabReport() {
+  return report
+    ? { ...report, metrics: active?.metrics ? active.metrics.snapshot() : report.metrics }
+    : null;
+}
+export function stopLab() {
+  stop("Teste encerrado pelo usuário");
+}

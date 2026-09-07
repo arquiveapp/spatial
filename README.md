@@ -33,6 +33,8 @@ npm run check
 npm run build:wasm  # Docker required; digest-pinned Emscripten 6.0.2
 npm run test:wasm
 npm run devlab     # http://127.0.0.1:4178
+npm run devlab:mobile  # optional temporary HTTPS phone link; cloudflared required
+npm run devlab:results # inspect explicitly submitted local reports
 ```
 
 `check` runs formatting, rights, strict types, builds, behavioral tests, publint and installation
@@ -40,14 +42,16 @@ of all five real tarballs into an isolated consumer. Both NodeNext and Bundler d
 browser-free ESM imports are tested. `npm run sbom` emits the installed npm CycloneDX inventory.
 WASM tests are a separate explicit local gate; npm pack does not invoke Docker or publish.
 
-The lab provides an Android WebXR cube, camera/Worker/SIMD measurements and a throwaway gyro +
+The lab provides a local GLB viewer (explicitly non-AR), optional WebXR model placement, an
+Android WebXR cube, camera/Worker/SIMD measurements and a throwaway gyro +
 planar patch diagnostic. Read [the lab procedure](docs/validation.md) before using its results.
 The current capture experiment uses the ImageBitmap/canvas path; preferred TrackProcessor paths
 remain pending. Synthetic tests do not validate iOS capture, gyro axes, tracking or thermal use.
 
-Physical phones require consumer-controlled HTTPS hosting. Loopback HTTP works only on the
-same machine; the server binds to loopback and has a narrow static-file allowlist. No tunnel,
-hosted service, certificate bypass or public deployment is configured.
+Physical phones can now use the optional [mobile lab](docs/mobile-lab.md) HTTPS tunnel. It forwards
+only the local test app, explicitly configured assets and a button-driven result receiver.
+Camera imagery is never uploaded. This testing transport is separate from library distribution;
+no permanent hosting, certificate bypass or production deployment is configured.
 
 ## Packages and boundaries
 

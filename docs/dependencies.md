@@ -41,7 +41,10 @@ See [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) for exact development-to
 optional platform limits, the pinned Emscripten diagnostic and proposed future dependencies.
 `npm run check:rights` enforces the reviewed lockfile and licence/notice hashes locally;
 `npm run sbom` emits CycloneDX. There is no hosted SBOM workflow.
-The monorepo adds only original internal packages, no new third-party npm dependencies.
+The foundation added only original internal packages. The authorized phone lab now uses exact
+three.js 0.185.1 (MIT, no dependencies), after reviewing its actual LICENSE; it is development-only
+and excluded from all library tarballs. The optional existing cloudflared CLI is lab transport
+only. Models remain private local fixtures with independent rights.
 
 Keep customer assets and their rights separate from the library's code licence. Do not infer
 that a public source repository grants rights to third-party brands, datasets or model assets.

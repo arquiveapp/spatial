@@ -63,11 +63,14 @@
     "build:wasm": "node scripts/build-wasm.mjs",
     "test:wasm": "node tests/wasm.mjs",
     "devlab": "node tools/devlab/serve.mjs",
-    "sbom": "npm sbom --sbom-format cyclonedx"
+    "sbom": "npm sbom --sbom-format cyclonedx",
+    "devlab:mobile": "node tools/devlab/mobile.mjs",
+    "devlab:results": "node tools/devlab/results.mjs"
   },
   "devDependencies": {
     "prettier": "3.9.6",
     "publint": "0.3.24",
+    "three": "0.185.1",
     "typescript": "7.0.2"
   },
   "workspaces": [

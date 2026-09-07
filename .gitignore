@@ -10,3 +10,5 @@ coverage/
 
 tools/devlab/generated/
 tools/devlab/results/
+
+.local/

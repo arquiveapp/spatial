@@ -6,3 +6,5 @@ package-lock.json
 
 tools/devlab/generated/
 tools/devlab/results/
+
+.local/

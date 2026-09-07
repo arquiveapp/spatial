@@ -27,7 +27,13 @@ This is a fail-closed inventory gate for the present distribution, not blanket l
   licences, not Spatial's MIT. When hosting generated lab artifacts preserve the generated
   toolchain licence texts alongside them. No toolchain binary is committed.
 
-OpenCV/Eigen/Sophus/three.js/wasm-feature-detect are proposals, not dependencies. Adopting any
+three.js 0.185.1 is an exact MIT development dependency used only by the authorized local lab,
+including its original GLTFLoader/OrbitControls/utilities. Its installed LICENSE is hash-checked
+and available at `/vendor/three/LICENSE` to authenticated lab clients. None of it enters npm
+library tarballs. cloudflared 2026.8.3 is an existing optional local CLI, not bundled or installed
+by the library.
+
+OpenCV/Eigen/Sophus/wasm-feature-detect remain proposals, not dependencies. Adopting any
 requires exact-source and compiled/transitive review plus an update to this gate and notices.
 Eigen requires MPL source availability, `EIGEN_MPL2_ONLY` and build enforcement against LGPL files.
 No GPL/LGPL/AGPL/NC/proprietary component is allowed in the default browser distribution.

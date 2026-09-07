@@ -50,3 +50,19 @@ test("synthetic textured plane recovers a small translation in relative units", 
   p.place(texture(), 320, 180, null);
   assert.equal(p.track(texture(), identity()).state, "lost");
 });
+
+test("portrait camera coordinates respect contain letterboxing", async () => {
+  const { containedRect } = await import("../tools/devlab/video-rect.mjs");
+  assert.deepEqual(containedRect({ left: 10, top: 20, width: 400, height: 400 }, 1920, 1080), {
+    left: 10,
+    top: 107.5,
+    width: 400,
+    height: 225,
+  });
+  assert.deepEqual(containedRect({ left: 10, top: 20, width: 400, height: 400 }, 1080, 1920), {
+    left: 97.5,
+    top: 20,
+    width: 225,
+    height: 400,
+  });
+});

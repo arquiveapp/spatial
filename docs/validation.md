@@ -22,13 +22,14 @@ measurement or invoke the G2 fallback decision without a real failed measurement
 2. Repeat `npm run build:wasm` and compare the hashes in `tools/devlab/generated/build.json`.
    The compiler runs with network disabled, fixed source path/epoch and the recorded image
    digest/platform. Cross-platform bit-for-bit equivalence is not claimed.
-3. `npm run devlab` starts only the loopback static lab, default port 4178. Set
+3. `npm run devlab` starts the loopback lab, default port 4178. Set
    `SPATIAL_LAB_PORT` to use another unused port. Never take over an existing listener.
 4. For phones serve the allowlisted lab files, generated WASM and core `dist/index.js` through
    your own trusted HTTPS origin; supply `/lab-build.json` with the exact clean Git commit and
    `dirty: false`. Keep the same absolute paths. The local server intentionally exposes no
-   repository files, POST receiver or LAN listener. No tunnel/hosting service is required by
-   the library. Preserve [toolchain notices](../THIRD_PARTY_NOTICES.md).
+   arbitrary repository files or a LAN listener. Its explicit-action POST receiver stores diagnostic
+   reports locally. The optional [phone-lab tunnel](mobile-lab.md) automates HTTPS access for local testing;
+   it is not required by the library. Preserve [toolchain notices](../THIRD_PARTY_NOTICES.md).
 5. Cross-origin embedding needs camera, accelerometer, gyroscope and xr-spatial-tracking policy
    grants from the embedding site. Record both allowed and denied iframe cases. Camera access
    requires a secure context; do not bypass a TLS warning to run the experiment.

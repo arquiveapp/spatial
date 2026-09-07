@@ -514,6 +514,21 @@
           "sha256": "f5c708b59114507b8b27b48181b6883d106bbca0c1634bbee45b5e344237b66b"
         }
       ]
+    },
+    {
+      "path": "node_modules/three",
+      "version": "0.185.1",
+      "license": "MIT",
+      "integrity": "sha512-5aojFCXKwnjBRZvUnt3WFfEcvUJgkN5LlijRFN95hMy8WVkG4I0QNcJE+OuWvuJ0bOdStrbfXn0pkd6/QyiAlg==",
+      "source": "https://registry.npmjs.org/three/-/three-0.185.1.tgz",
+      "distribution": "development-only",
+      "files": [
+        {
+          "path": "node_modules/three/LICENSE",
+          "sha256": "8b378ebe60e2fe500158cb0ac71cb5e8b7d92953c2abcc63a0eb90499653b5bc"
+        }
+      ],
+      "reviewScope": "MIT inspected before adoption. No dependencies. Browser lab only, excluded from all npm artifacts."
     }
   ],
   "native": []
