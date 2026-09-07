@@ -137,7 +137,7 @@ export async function startTabletop({
       scale,
       rotationRadians: rotation,
       calibration: report.calibration,
-      renderSmoothingSeconds: 0.025,
+      renderSmoothing: "adaptive 20-220 ms by gyro speed; deadband when still",
       renderExtrapolation: { ...extrapolation },
       heldPoseMaxMs: 120,
       bridgeMaxMs: 1500,
@@ -349,10 +349,27 @@ export async function startTabletop({
       }
       targetCamera.fromArray(view).invert();
       targetCamera.decompose(targetPosition, targetRotation, unitScale);
-      const alpha =
-        !root.visible || !lastPoseUpdate ? 1 : 1 - Math.exp(-(now - lastPoseUpdate) / 25);
-      smoothPosition.lerp(targetPosition, alpha);
-      smoothRotation.slerp(targetRotation, alpha);
+      if (!root.visible || !lastPoseUpdate) {
+        smoothPosition.copy(targetPosition);
+        smoothRotation.copy(targetRotation);
+      } else {
+        // Adaptive one-pole smoothing keyed to how fast the phone is actually
+        // turning (now that the gyro integrates). Held still, a long time constant
+        // absorbs per-frame pose noise so the tall model stops swimming; once the
+        // user moves, the constant collapses and the model tracks with little lag.
+        // A rotation/position deadband freezes sub-noise changes entirely.
+        const speed = pose.motionDegPerS ?? 0,
+          rotDelta = smoothRotation.angleTo(targetRotation),
+          posDelta = smoothPosition.distanceTo(targetPosition),
+          referenceSpan = Math.max(1e-3, smoothPosition.length());
+        const still = speed < 2.5 && rotDelta < 0.02 && posDelta < referenceSpan * 0.03;
+        if (!(still && rotDelta < 0.006 && posDelta < referenceSpan * 0.01)) {
+          const tau = still ? 220 : speed > 12 || rotDelta > 0.08 ? 20 : 70;
+          const alpha = 1 - Math.exp(-(now - lastPoseUpdate) / tau);
+          smoothPosition.lerp(targetPosition, alpha);
+          smoothRotation.slerp(targetRotation, alpha);
+        }
+      }
       camera.matrixWorld.compose(smoothPosition, smoothRotation, unitScale);
       camera.matrix.copy(camera.matrixWorld);
       camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
@@ -516,13 +533,14 @@ export async function startTabletop({
         gravity = event.accelerationIncludingGravity;
       const valid = rate && [rate.alpha, rate.beta, rate.gamma].every(Number.isFinite);
       if (valid) {
+        // Delivery-timestamp dt; iOS interval is seconds, so never divide it as ms.
+        const at = performance.now(),
+          previous = gyroBuffer.at(-1),
+          stepMs = previous ? at - previous.time : null;
         gyroBuffer.push({
-          time: performance.now(),
+          time: at,
           rate: { alpha: rate.alpha, beta: rate.beta, gamma: rate.gamma },
-          dt:
-            Number.isFinite(event.interval) && event.interval > 0 && event.interval <= 100
-              ? event.interval / 1000
-              : 0.016,
+          dt: stepMs && stepMs > 0 && stepMs < 100 ? stepMs / 1000 : 0.016,
         });
         while (gyroBuffer.length > 200) gyroBuffer.shift();
       }
@@ -620,6 +638,8 @@ export async function startTabletop({
             Array.isArray(tracking.rotation) &&
             Array.isArray(tracking.translationOverDistance),
           latencyMs: tracking.gyro?.latencyMs ?? 30,
+          motionDegPerS: tracking.gyro?.motionDegPerS ?? 0,
+          measured,
         };
         applyPose(displayedPose, true);
         camera.projectionMatrix.fromArray(tracking.projectionMatrix);

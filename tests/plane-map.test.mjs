@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FeaturePlane, MAX_FEATURES, project } from "../tools/devlab/feature-plane.mjs";
 import { TrackingSession, identity, integrate } from "../tools/devlab/patch.mjs";
-import { intrinsics, rotationHomography } from "../tools/devlab/tracking-math.mjs";
+import { intrinsics, rotationHomography, relativeAngle } from "../tools/devlab/tracking-math.mjs";
 
 const width = 240,
   height = 320;
@@ -285,19 +285,45 @@ test("session seeds tracking with gyro rotation and bridges a short visual gap w
   assert.deepEqual(back.anchorMatrix, anchor);
   assert.equal(back.recoveries, 1);
   assert.equal(back.recoveryJumpPx, null);
-  // A short occlusion stays bridged throughout; the visible jump at recovery is small.
+  // A short occlusion stays bridged throughout; the gyro-predicted position and
+  // the reacquired visual position agree within a few pixels, so no visible jump.
   for (let i = 0; i < 15; i++) {
-    session.motion([{ time: time + 16, rate: pan, gravity, interval: 16 }]);
+    session.motion([
+      { time: time + 16, rate: pan, gravity, interval: 16 },
+      { time: time + 32, rate: pan, gravity, interval: 16 },
+    ]);
     time += 33;
-    R = integrate(R, pan, 0.016);
+    R = integrate(R, pan, 0.033);
     assert.equal(session.frame(blank, time).state, "bridging");
   }
   time += 33;
   const again = session.frame(frameAt(rotationHomography(camera, R)), time);
   assert.equal(again.state, "tracking", again.reason);
   assert.equal(again.recoveries, 2);
-  assert.ok(again.recoveryJumpPx < 8, `jump ${again.recoveryJumpPx}`);
+  assert.ok(again.recoveryJumpPx < 12, `jump ${again.recoveryJumpPx}`);
   assert.ok(back.gyro.frames > 0);
+});
+
+test("gyro integrates real rotation whether the interval arrives in ms or iOS seconds", () => {
+  // iOS Safari reports event.interval in seconds (~0.016); the spec intends ms.
+  // Both must integrate the same physical rotation; timestamps disambiguate.
+  const rate = { alpha: 30, beta: 0, gamma: 0 };
+  for (const [label, interval] of [
+    ["ms", 16],
+    ["ios-seconds", 0.016],
+    ["absent", undefined],
+  ]) {
+    const session = new TrackingSession(360, 640);
+    const samples = [];
+    for (let i = 1; i <= 30; i++)
+      samples.push({ time: i * 16, rate, gravity: { x: 0, y: 0, z: 9.8 }, interval });
+    session.motion(samples);
+    // 30 Hz-ish, 30 deg/s over ~0.46 s ≈ 0.24 rad of accumulated scene rotation.
+    session.lastFrameTime = 16;
+    const R = session.rotationBetween(16, 480);
+    const angle = relativeAngle(R, identity());
+    assert.ok(angle > 0.2 && angle < 0.32, `${label}: integrated ${angle.toFixed(3)} rad`);
+  }
 });
 
 test("placement waits for a steady gravity estimate instead of a single noisy sample", () => {

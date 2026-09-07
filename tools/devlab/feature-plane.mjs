@@ -15,9 +15,10 @@
 // back-projected through the accepted homography. The homography always maps
 // reference pixels to current pixels, so the rigid pose solver is unchanged.
 const IDENTITY = [1, 0, 0, 0, 1, 0, 0, 0, 1];
-export const MAX_FEATURES = 160;
+export const MAX_FEATURES = 130;
 const MAX_NEW_PER_FRAME = 12;
 const RESERVE = 40;
+const LK_BUDGET = 90;
 const CELLS = [4, 6];
 const LEVELS = 3;
 const RADII = [5, 3, 3];
@@ -545,10 +546,44 @@ export class FeaturePlane {
   // Track features from `source` (whose image positions are project(sourceH, p))
   // into `current`, starting at the seeded prediction. Every accepted fit passes
   // consensus, appearance, support and geometry gates; failure returns null.
+  // Distributed subset of features to run optical flow on this frame. The full
+  // map defines the plane, but tracking every feature twice (forward+backward LK)
+  // dominated iPhone frame time (~31 ms, dropping ~60% of frames). Cap the LK work
+  // to a cell-spread budget of recently-seen features; the rest still anchor the
+  // map and are revisited as the budget rotates.
+  trackingSubset(seed) {
+    const visible = [];
+    for (const feature of this.features) {
+      const q = project(seed, feature.p);
+      if (Number.isFinite(q[0] + q[1]) && inBounds(this.levels0, q[0], q[1], MARGIN))
+        visible.push({
+          feature,
+          cell: Math.floor((6 * q[0]) / this.width) + 6 * Math.floor((8 * q[1]) / this.height),
+        });
+    }
+    if (visible.length <= LK_BUDGET) return visible.map((v) => v.feature);
+    const buckets = new Map();
+    for (const v of visible)
+      (buckets.get(v.cell) ?? buckets.set(v.cell, []).get(v.cell)).push(v.feature);
+    for (const list of buckets.values()) list.sort((a, b) => b.seen - a.seen);
+    const selected = [],
+      lists = [...buckets.values()];
+    for (let round = 0; selected.length < LK_BUDGET; round++) {
+      let progressed = false;
+      for (const list of lists)
+        if (round < list.length) {
+          selected.push(list[round]);
+          progressed = true;
+          if (selected.length >= LK_BUDGET) break;
+        }
+      if (!progressed) break;
+    }
+    return selected;
+  }
   attempt(source, sourceH, current, seed) {
     const matches = [],
       scale = Math.max(this.width, this.height);
-    for (const feature of this.features) {
+    for (const feature of this.trackingSubset(seed)) {
       const origin = project(sourceH, feature.p),
         estimate = project(seed, feature.p);
       if (

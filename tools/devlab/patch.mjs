@@ -318,18 +318,25 @@ export class TrackingSession {
       }
       const rate = sample.rate;
       if (rate && [rate.alpha, rate.beta, rate.gamma].every(Number.isFinite)) {
-        const interval = sample.interval;
-        this.gyro.push({
-          time: sample.time,
-          rate,
-          dt:
-            Number.isFinite(interval) && interval > 0 && interval <= 100
-              ? interval / 1000
-              : Math.min(
-                  0.05,
-                  Math.max(0, (sample.time - (this.gyro.at(-1)?.time ?? sample.time - 16)) / 1000),
-                ),
-        });
+        // iOS Safari reports event.interval in seconds (~0.016); the W3C intent
+        // is milliseconds. Dividing an iOS interval by 1000 collapsed dt to ~1e-5
+        // and integrated ~zero rotation, so prediction never activated on device.
+        // Delivery timestamps are unambiguous, so derive dt from them and use the
+        // reported interval only as a plausibility fallback for the first sample.
+        const previous = this.gyro.at(-1);
+        const stepMs = previous && sample.time > previous.time ? sample.time - previous.time : null;
+        const intervalMs = Number.isFinite(sample.interval)
+          ? sample.interval < 1
+            ? sample.interval * 1000
+            : sample.interval
+          : null;
+        const dt =
+          stepMs && stepMs > 0 && stepMs < 100
+            ? stepMs / 1000
+            : intervalMs && intervalMs > 0 && intervalMs < 100
+              ? intervalMs / 1000
+              : 0.016;
+        this.gyro.push({ time: sample.time, rate, dt });
         this.gyroSamples++;
         this.lastMotion = Math.max(this.lastMotion ?? -Infinity, sample.time);
         while (this.gyro.length && this.gyro[0].time < sample.time - 2500) this.gyro.shift();
