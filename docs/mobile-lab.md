@@ -132,5 +132,8 @@ observed and fixed by warming materials/textures before accepting placement. Rec
 `SP-1A96A79E` persisted a `synthetic-tabletop` report with two placements, 2,821 frames and no
 runtime errors. This is integration evidence only. The embedded Codex browser did not deliver
 synthetic captureStream frames, so this video/render check used the existing Chrome browser.
+The embedded tab later crashed and could not be restored through browser automation; that
+environment remains unverified. The existing Chrome browser completed the final HTTPS run,
+and receipt `SP-DF85D1DD` was confirmed on disk with clean source/server commit `fefe62b`.
 The local check passes 36 tests, strict build/types, rights and real-package consumer checks.
 The 20-cycle resource test uses controlled resources; physical camera/GPU leak proof is pending.
