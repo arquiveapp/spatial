@@ -25,11 +25,20 @@ export function createSyntheticSource() {
     if (disposed) return;
     const t = (performance.now() - start) / 1000;
     context.drawImage(texture, -40 + 18 * Math.sin(t / 3), -40 + 12 * Math.cos(t / 4));
+    // Periodic exposure drift and two seconds of complete occlusion exercise the
+    // same camera/Worker/render recovery path, explicitly marked as synthetic.
+    const occluded = t % 12 >= 8 && t % 12 < 10;
+    context.fillStyle = `rgba(255,255,255,${0.1 + 0.09 * Math.sin(t / 4)})`;
+    context.fillRect(0, 0, 720, 1280);
+    if (occluded) {
+      context.fillStyle = "#898989";
+      context.fillRect(0, 80, 720, 1200);
+    }
     context.fillStyle = "#162c22";
     context.fillRect(0, 0, 720, 80);
     context.fillStyle = "white";
     context.font = "bold 24px system-ui";
-    context.fillText("SIMULAÇÃO · SEM CÂMERA REAL", 25, 48);
+    context.fillText(occluded ? "SIMULAÇÃO · OBSTRUÇÃO" : "SIMULAÇÃO · SEM CÂMERA REAL", 25, 48);
     stream?.getVideoTracks()[0]?.requestFrame?.();
   }
   const stream = canvas.captureStream(0),
@@ -38,7 +47,7 @@ export function createSyntheticSource() {
   frame = setInterval(draw, 33);
   return {
     stream,
-    label: "synthetic-portrait-translation",
+    label: "synthetic-portrait-translation-exposure-occlusion",
     subscribeMotion(handler) {
       const send = () =>
         handler({

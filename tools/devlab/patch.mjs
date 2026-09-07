@@ -4,7 +4,8 @@
 // Direct photometric alignment uses numerical Gauss-Newton (no copied implementation).
 // Instant Motion Tracking (Wei et al., 2019, https://arxiv.org/abs/1907.06796)
 // motivates the gyro/plane split; this is not their implementation or full algorithm.
-import { intrinsics, anchorForPlane, cameraMatrices } from "./tracking-math.mjs";
+import { intrinsics, anchorForPlane, cameraMatrices, homographyPose } from "./tracking-math.mjs";
+import { FeaturePlane } from "./feature-plane.mjs";
 export function multiply(a, b) {
   return Array.from(
     { length: 9 },
@@ -250,32 +251,43 @@ export class PlanarPatch {
   }
 }
 
-// Shared by Worker and deterministic replay tests; all timestamps originate on
-// the page's performance clock, never the Worker's unrelated time origin.
+// Visual-plane session: the initial reference and anchor live until explicit reposition.
+// Motion delivery is used for the initial gravity alignment, not forced onto image rotation.
+// See docs/tabletop-tracking-research.md for algorithm and timing limitations.
 export class TrackingSession {
   constructor(width, height) {
-    this.patch = new PlanarPatch(width, height);
-    this.rotation = identity();
+    this.width = width;
+    this.height = height;
+    this.camera = intrinsics(width, height);
+    this.features = new FeaturePlane(width, height);
     this.lastMotion = null;
     this.gravity = null;
     this.pending = null;
     this.pendingAt = null;
-    this.failures = 0;
-    this.sensorGap = false;
+    this.anchorMatrix = null;
+    this.normal = null;
+    this.center = null;
+    this.lastPose = null;
+    this.lastAccepted = null;
+    this.recoveries = 0;
+    this.recovering = false;
+    this.candidate = null;
+    this.distance = 0.65;
   }
   motion(samples) {
-    for (const s of samples) {
-      if (!Number.isFinite(s.time)) continue;
-      const valid = s.rate && [s.rate.alpha, s.rate.beta, s.rate.gamma].every(Number.isFinite);
-      if (!valid || (this.lastMotion !== null && s.time <= this.lastMotion)) continue;
-      if (this.lastMotion !== null) {
-        const dt = (s.time - this.lastMotion) / 1000;
-        if (dt > 0.1 && this.patch.points.length) this.sensorGap = true;
-        else this.rotation = integrate(this.rotation, s.rate, dt);
+    for (const sample of samples) {
+      if (
+        !Number.isFinite(sample.time) ||
+        (this.lastMotion !== null && sample.time <= this.lastMotion)
+      )
+        continue;
+      if (
+        sample.gravity &&
+        [sample.gravity.x, sample.gravity.y, sample.gravity.z].every(Number.isFinite)
+      ) {
+        this.gravity = { ...sample.gravity };
+        this.lastMotion = sample.time;
       }
-      this.lastMotion = s.time;
-      if (s.gravity && [s.gravity.x, s.gravity.y, s.gravity.z].every(Number.isFinite))
-        this.gravity = { ...s.gravity };
     }
   }
   place(point) {
@@ -287,43 +299,155 @@ export class TrackingSession {
       return;
     this.pending = [...point];
     this.pendingAt = null;
-    this.patch.points = [];
-    this.failures = 0;
+    this.anchorMatrix = null;
+    this.lastPose = null;
+    this.candidate = null;
+    this.lastAccepted = null;
+    this.recovering = false;
+  }
+  result(pose, visual, sent, motionAgeMs) {
+    const H = visual.homography,
+      [x, y] = this.center;
+    const z = H[6] * x + H[7] * y + H[8];
+    return {
+      state: "tracking",
+      mode: "visual-plane",
+      width: this.width,
+      height: this.height,
+      scaleMode: "assumed",
+      assumedPlaneDistanceMeters: this.distance,
+      calibration: "estimated-fov-65deg-long-edge",
+      anchorMatrix: [...this.anchorMatrix],
+      ...cameraMatrices(pose.rotation, pose.translationOverDistance, this.camera, this.distance),
+      rotation: [...pose.rotation],
+      translationOverDistance: [...pose.translationOverDistance],
+      screen: [(H[0] * x + H[1] * y + H[2]) / z, (H[3] * x + H[4] * y + H[5]) / z],
+      inliers: visual.inliers,
+      features: visual.features,
+      reprojectionError: visual.reprojectionError,
+      poseReprojectionError: pose.reprojectionError,
+      recoveries: this.recoveries,
+      motionAgeMs,
+      timestampMs: sent,
+      timing: "frame-callback-and-motion-delivery; no exposure/IMU calibration",
+    };
   }
   frame(luma, sent) {
     if (!Number.isFinite(sent)) return { state: "lost", reason: "invalid-frame-clock" };
     const age = this.lastMotion === null ? null : sent - this.lastMotion;
-    const fresh = age !== null && age >= -100 && age <= 350;
+    let visual, checkpoint;
     if (this.pending) {
       this.pendingAt ??= sent;
-      if (!fresh || !this.gravity) {
-        if (sent - this.pendingAt > 2000) {
+      if (!this.gravity || age === null || age < -100 || age > 500) {
+        if (sent - this.pendingAt > 3000) {
           this.pending = null;
-          return { state: "lost", reason: "sensor-permission-or-data-unavailable" };
+          return { state: "unplaced", reason: "sensor-permission-or-data-unavailable" };
         }
         return { state: "initializing", reason: "waiting-for-sensors", motionAgeMs: age };
       }
-      const result = this.patch.place(
-        luma,
-        this.pending[0] * this.patch.w,
-        this.pending[1] * this.patch.h,
-        this.gravity,
-      );
-      this.rotation = identity();
-      this.sensorGap = false;
+      const n = [this.gravity.x, -this.gravity.y, -this.gravity.z],
+        norm = Math.hypot(...n);
+      if (norm < 7 || norm > 12) return { state: "initializing", reason: "hold-still" };
+      this.normal = n.map((v) => v / norm);
+      if (this.normal[2] < 0) this.normal = this.normal.map((v) => -v);
+      this.center = [this.pending[0] * this.width, this.pending[1] * this.height];
+      const anchor = anchorForPlane(this.center, this.normal, this.camera, this.distance);
+      if (!anchor || this.normal[2] < 0.15)
+        return { state: "initializing", reason: "point-down-at-table" };
+      visual = this.features.place(luma, ...this.center);
       this.pending = null;
-      return { ...result, motionAgeMs: age };
+      if (visual.state !== "tracking")
+        return { state: "unplaced", reason: visual.reason, features: visual.features ?? 0 };
+      this.anchorMatrix = anchor;
+    } else {
+      if (!this.anchorMatrix) return { state: "unplaced", reason: "tap-textured-table" };
+      checkpoint = this.features.checkpoint();
+      visual = this.features.track(luma);
     }
-    if (!this.patch.points.length)
-      return { state: "unplaced", reason: "tap-textured-table", motionAgeMs: age };
-    if (this.sensorGap) {
-      this.patch.points = [];
-      return { state: "lost", reason: "sensor-gap-reposition", motionAgeMs: age };
+    if (visual.state !== "tracking") {
+      this.recovering = true;
+      this.candidate = null;
+      return {
+        state: "recovering",
+        reason: visual.reason ?? "visual-support-lost",
+        inliers: visual.inliers ?? 0,
+        features: visual.features ?? 0,
+        referenceRetained: true,
+        motionAgeMs: age,
+      };
     }
-    if (!fresh) return { state: "lost", reason: "gyro-unavailable-or-stale", motionAgeMs: age };
-    const result = this.patch.track(luma, this.rotation);
-    this.failures = result.state === "tracking" ? 0 : this.failures + 1;
-    if (this.failures >= 3) this.patch.points = [];
-    return { ...result, motionAgeMs: age };
+    const rejectFit = () => {
+      if (checkpoint) this.features.restore(checkpoint);
+    };
+    const pose = homographyPose(visual.homography, this.normal, this.camera, visual.matches);
+    if (!pose || ![...pose.rotation, ...pose.translationOverDistance].every(Number.isFinite)) {
+      this.recovering = true;
+      this.candidate = null;
+      rejectFit();
+      return {
+        state: "recovering",
+        reason: "non-rigid-or-ambiguous-pose",
+        referenceRetained: true,
+        inliers: visual.inliers,
+        features: visual.features,
+      };
+    }
+    // Reject sudden camera-depth jumps (foreground hand/unstable homography), never scale
+    // the model to follow them. Large changes after loss require two agreeing observations.
+    if (this.lastPose && this.lastAccepted !== null) {
+      const dt = Math.max(0, (sent - this.lastAccepted) / 1000);
+      const translationStep = Math.hypot(
+        ...pose.translationOverDistance.map((v, i) => v - this.lastPose.translationOverDistance[i]),
+      );
+      const angularTrace = pose.rotation.reduce(
+        (sum, v, i) => sum + v * this.lastPose.rotation[i],
+        0,
+      );
+      const angle = Math.acos(Math.max(-1, Math.min(1, (angularTrace - 1) / 2)));
+      // A plane homography cannot resolve a 180-degree branch by itself. Never
+      // accept a gross orientation switch just because two ambiguous fits agree.
+      if (angle > 1.2) {
+        this.recovering = true;
+        this.candidate = null;
+        rejectFit();
+        return {
+          state: "recovering",
+          reason: "orientation-branch-rejected",
+          referenceRetained: true,
+          inliers: visual.inliers,
+          features: visual.features,
+        };
+      }
+      const jump =
+        translationStep > 0.12 + Math.min(dt, 0.5) * 1.2 || angle > 0.18 + Math.min(dt, 0.5) * 2;
+      if (jump || this.recovering) {
+        const agrees =
+          this.candidate &&
+          Math.hypot(
+            ...pose.translationOverDistance.map(
+              (v, i) => v - this.candidate.translationOverDistance[i],
+            ),
+          ) < 0.08 &&
+          pose.rotation.reduce((sum, v, i) => sum + v * this.candidate.rotation[i], 0) > 2.96;
+        if (!agrees) {
+          this.candidate = pose;
+          this.recovering = true;
+          rejectFit();
+          return {
+            state: "recovering",
+            reason: "confirming-reference",
+            referenceRetained: true,
+            inliers: visual.inliers,
+            features: visual.features,
+          };
+        }
+      }
+    }
+    if (this.recovering) this.recoveries++;
+    this.recovering = false;
+    this.candidate = null;
+    this.lastPose = pose;
+    this.lastAccepted = sent;
+    return this.result(pose, visual, sent, age);
   }
 }

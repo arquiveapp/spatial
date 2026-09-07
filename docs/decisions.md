@@ -31,8 +31,7 @@ base/SIMD luma diagnostic builds; WebXR lab page; ImageBitmap/canvas capture mea
 gyro + direct single-plane patch prototype; local metric exports; synthetic regression tests.
 
 Pending engineering: TrackProcessor/VideoFrame capture paths; independently calibrated sensor
-axes, camera intrinsics and camera/IMU offset; ground-truth recording/alignment; robust tracker
-outlier rejection, yaw correction and patch expansion. These are not implemented features.
+axes, camera intrinsics and camera/IMU offset; ground-truth recording/alignment; plane expansion, mapped relocalisation and physical validation of the new visual pose. These remain pending.
 
 Blocked on physical lab access: all G1/G2/M1c measurements, target acceptance, 20-cycle device
 leaks, sustained capture/thermal tests. This run cannot supply a physical table, independent ground truth or operator-controlled
@@ -63,4 +62,15 @@ The lab now binds original planar tracking to the real GLB through explicit view
 anchor matrices, portrait-preserving capture, placement/reposition/scale/rotation, loss coaching,
 and bounded resource lifecycle. Tracking is JavaScript in a Worker; the existing original WASM
 kernel converts luma only. This is not a production C++ VIO engine or Stage 2. Estimated intrinsics,
-assumed plane distance and no patch expansion/relocalisation remain explicit limitations.
+assumed plane distance and no plane expansion/general relocalisation remain explicit limitations.
+
+## Recording-driven tracking repair — 2026-09-07
+
+The user supplied a failed tabletop recording and authorized detailed research and correction.
+The lab now selects distributed corners, tracks with brightness-normalized pyramidal optical
+flow, rejects inconsistent geometry with RANSAC, estimates visual rigid pose and retains the
+initial reference through occlusion. Recovery requires consecutive valid poses; rejected fits
+cannot poison prediction. The original direct-patch primitive remains for regression comparison,
+but the integrated Worker session uses the feature tracker. This adds no dependency or public
+API. See [research and evidence](tabletop-tracking-research.md), including the final video segment
+that still does not recover. No physical gate is promoted.

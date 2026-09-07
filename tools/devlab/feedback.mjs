@@ -31,8 +31,10 @@ export function makeReport(base, { build, device, observations, rating, id }) {
     ? {
         ...base.metrics,
         trace: (base.metrics.trace ?? [])
-          .filter((_, i, a) => i % Math.max(1, Math.ceil(a.length / 600)) === 0)
-          .slice(0, 600),
+          .filter(
+            (_, i, a) => i % Math.max(1, Math.ceil(a.length / 300)) === 0 || i === a.length - 1,
+          )
+          .slice(-300),
       }
     : null;
   const result = {

@@ -5,6 +5,15 @@ by [the maintenance policy](https://github.com/arquiveapp/spatial/blob/main/docs
 
 ## Unreleased
 
+### Changed
+
+- Repair experimental tabletop tracking after failed phone footage: distributed feature flow,
+  exposure normalization, robust rigid pose, persistent reference recovery and rejection of
+  foreground collapse/orientation jumps. Rejected fits cannot change the next prediction.
+- Keep recent diagnostic frames and add a browser replay with exposure changes/occlusion.
+  Recording-derived replay shows partial improvement; the final segment still loses tracking.
+  Physical iPhone validation and publication remain pending.
+
 ### Added
 
 - Complete experimental tabletop lab flow: portrait camera/Worker tracking drives GLB placement,

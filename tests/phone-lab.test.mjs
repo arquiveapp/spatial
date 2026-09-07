@@ -270,7 +270,23 @@ test("feedback export preserves bounded runtime errors and tabletop diagnostics"
         errors: [{ name: "NotAllowedError", message: "Camera denied /join/abcdef" }],
         notes: ["Synthetic fixture only"],
         capture: { luma: [640, 360] },
-        metrics: { frames: 10, calibration: "estimated", trace: [] },
+        metrics: {
+          frames: 1200,
+          calibration: "estimated",
+          trace: Array.from({ length: 1200 }, (_, time) => ({
+            time,
+            state: "tracking",
+            reason: "background-tracked",
+            inliers: 80,
+            features: 80,
+            reprojectionError: 0.0123456789,
+            viewMatrix: Array(16).fill(0.1234567890123456),
+            projectionMatrix: Array(16).fill(0.1234567890123456),
+            anchorMatrix: Array(16).fill(0.1234567890123456),
+            rotation: Array(9).fill(0.1234567890123456),
+            translationOverDistance: [0.123456789, 0.123456789, 0.123456789],
+          })),
+        },
       },
       {
         build: { commit: "a".repeat(40), dirty: false },
@@ -284,6 +300,9 @@ test("feedback export preserves bounded runtime errors and tabletop diagnostics"
     ]);
     assert.deepEqual(exported.notes, ["Synthetic fixture only"]);
     assert.equal(exported.metrics.calibration, "estimated");
+    assert.equal(exported.metrics.trace.length, 300);
+    assert.equal(exported.metrics.trace.at(-1).time, 1199);
+    assert(Buffer.byteLength(JSON.stringify(exported)) < 750 * 1024);
     assert.doesNotThrow(() => validateReport(exported));
   } finally {
     for (const key of Object.keys(fake)) {

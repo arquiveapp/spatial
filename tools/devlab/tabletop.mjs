@@ -63,6 +63,7 @@ export async function startTabletop({
     droppedFrames: 0,
     placements: 0,
     motionSamples: 0,
+    stateFrames: {},
     tracking: { state: "starting" },
   };
   let stream,
@@ -106,11 +107,14 @@ export async function startTabletop({
       scale,
       rotationRadians: rotation,
       calibration: report.calibration,
+      renderSmoothingSeconds: 0.045,
+      heldPoseMaxMs: 120,
       assumedPlaneDistanceMeters: report.assumedPlaneDistanceMeters,
       frames: report.frames,
       droppedFrames: report.droppedFrames,
       placements: report.placements,
       motionSamples: report.motionSamples,
+      stateFrames: { ...report.stateFrames },
       engineMs: stats(engineTimes),
       roundTripMs: stats(roundTrips),
       trace: report.trace.map((t) => ({ ...t })),
@@ -250,6 +254,9 @@ export async function startTabletop({
       luma: [width, height],
       pixelFormat: "RGBA canvas readback",
       captureTimeAvailable: false,
+      frameClock: "requestVideoFrameCallback delivery",
+      motionClock: "devicemotion handler delivery",
+      cameraImuCalibrated: false,
     };
     if (settings.facingMode === "user")
       throw Error("Selecione a câmera traseira e reabra o teste.");
@@ -265,6 +272,13 @@ export async function startTabletop({
     });
     const scene = new THREE.Scene(),
       camera = new THREE.Camera();
+    const targetCamera = new THREE.Matrix4(),
+      smoothPosition = new THREE.Vector3(),
+      smoothRotation = new THREE.Quaternion(),
+      targetPosition = new THREE.Vector3(),
+      targetRotation = new THREE.Quaternion(),
+      unitScale = new THREE.Vector3(1, 1, 1);
+    let lastPoseUpdate = 0;
     camera.matrixAutoUpdate = false;
     root = new THREE.Group();
     root.matrixAutoUpdate = false;
@@ -444,13 +458,30 @@ export async function startTabletop({
       const tracking = data.tracking;
       if (!tracking) return;
       report.tracking = tracking;
-      if (report.trace.length < 1200)
-        report.trace.push({ time: performance.now() - started, ...tracking });
+      report.stateFrames[tracking.state] = (report.stateFrames[tracking.state] ?? 0) + 1;
+      const traceTime = performance.now() - started,
+        previousTrace = report.trace.at(-1);
+      if (
+        !previousTrace ||
+        traceTime - previousTrace.time >= 200 ||
+        previousTrace.state !== tracking.state ||
+        previousTrace.reason !== tracking.reason
+      ) {
+        report.trace.push({ time: traceTime, ...tracking });
+        if (report.trace.length > 300) report.trace.shift();
+      }
       if (trackedPoseValid(tracking)) {
         root.matrix.fromArray(tracking.anchorMatrix);
-        camera.matrixWorldInverse.fromArray(tracking.viewMatrix);
-        camera.matrixWorld.copy(camera.matrixWorldInverse).invert();
+        targetCamera.fromArray(tracking.viewMatrix).invert();
+        targetCamera.decompose(targetPosition, targetRotation, unitScale);
+        const now = performance.now(),
+          alpha = !root.visible || !lastPoseUpdate ? 1 : 1 - Math.exp(-(now - lastPoseUpdate) / 45);
+        smoothPosition.lerp(targetPosition, alpha);
+        smoothRotation.slerp(targetRotation, alpha);
+        camera.matrixWorld.compose(smoothPosition, smoothRotation, unitScale);
         camera.matrix.copy(camera.matrixWorld);
+        camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+        lastPoseUpdate = now;
         camera.projectionMatrix.fromArray(tracking.projectionMatrix);
         camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
         root.visible = true;
@@ -461,13 +492,25 @@ export async function startTabletop({
           "Apartamento na mesa. Mova devagar e mantenha a região escolhida visível.",
         );
       } else {
-        root.visible = false;
-        reticle.hidden = false;
+        // A bounded display hold bridges one rejected frame; it is never a measured pose.
+        root.visible = root.visible && performance.now() - lastTracking <= 120;
+        reticle.hidden = root.visible;
+        const recovering = tracking.state === "recovering" || tracking.state === "lost";
+        const messages = {
+          "insufficient-distributed-texture":
+            "Poucos detalhes nessa região. Toque perto de manchas ou bordas da mesa.",
+          "waiting-for-sensors": "Segure o celular firme enquanto recebo o movimento.",
+          "sensor-permission-or-data-unavailable":
+            "Não recebi movimento. Confira a permissão no Safari e tente novamente.",
+          "point-down-at-table": "Incline o celular para baixo, apontando para a mesa.",
+          "hold-still": "Segure o celular parado por um instante.",
+        };
         status(
           tracking.state ?? "scanning",
-          tracking.state === "lost"
-            ? "Perdi a região da mesa. Volte ao ponto inicial ou toque para reposicionar."
-            : "Aponte para uma mesa com textura, mantenha o celular firme e toque onde colocar.",
+          messages[tracking.reason] ??
+            (recovering
+              ? "Recuperando a mesma região. Tire a mão da frente e volte a apontar para a mesa."
+              : "Aponte para a mesa e toque numa região com detalhes para colocar."),
           tracking.reason,
         );
       }
@@ -510,7 +553,9 @@ export async function startTabletop({
       }
       busy = true;
       const sent = performance.now();
-      if (meta?.captureTime !== undefined) report.capture.captureTimeAvailable = true;
+      if (Number.isFinite(meta?.captureTime)) report.capture.captureTimeAvailable = true;
+      report.capture.lastMediaTimeSeconds = meta?.mediaTime ?? video.currentTime;
+      report.capture.lastCaptureTimeMs = meta?.captureTime ?? null;
       frameTimer = setTimeout(
         () => fail(Error("A câmera ou o rastreamento parou de responder; reabra o teste.")),
         5000,
@@ -549,14 +594,13 @@ export async function startTabletop({
     });
     renderer.setAnimationLoop(() => {
       if (scope.disposed) return;
-      if (root.visible && performance.now() - lastTracking > 350) {
+      if (
+        root.visible &&
+        performance.now() - lastTracking > (lastState === "tracking" ? 250 : 120)
+      ) {
         root.visible = false;
         reticle.hidden = false;
-        status(
-          "lost",
-          "Movimento interrompido. Mantenha a mesa visível e toque para reposicionar.",
-          "stale-pose",
-        );
+        status("recovering", "Recuperando a mesma região. Mantenha a mesa visível.", "stale-pose");
       }
       adjustments.scale.setScalar(scale);
       adjustments.rotation.y = rotation;

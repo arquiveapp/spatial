@@ -34,6 +34,7 @@ const browserFiles = new Set([
   "metrics.mjs",
   "worker.mjs",
   "patch.mjs",
+  "feature-plane.mjs",
   "tabletop.mjs",
   "tabletop-runtime.mjs",
   "tabletop-replay.mjs",

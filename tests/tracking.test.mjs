@@ -87,7 +87,7 @@ test("tilted plane anchor is right handed and matches gyro-rotated optical proje
     ) < 1e-9,
   );
 });
-test("tap waits for sensor warmup; transient null rates do not erase valid sensors", () => {
+test("tap waits for gravity; visual tracking survives sensor delivery gaps", () => {
   const session = new TrackingSession(360, 640),
     im = texture(360, 640);
   session.place([0.5, 0.5]);
@@ -99,27 +99,40 @@ test("tap waits for sensor warmup; transient null rates do not erase valid senso
   const placed = session.frame(im, 130);
   assert.equal(placed.state, "tracking");
   assert.equal(placed.motionAgeMs, 10);
-  assert.equal(session.frame(im, 600).state, "lost");
-  session.motion([{ time: 620, rate: { alpha: 0, beta: 0, gamma: 0 }, gravity }]);
-  assert.equal(session.frame(im, 630).reason, "sensor-gap-reposition");
-  session.place([0.5, 0.5]);
-  assert.equal(session.frame(im, 640).state, "tracking");
+  const afterGap = session.frame(im, 1600);
+  assert.equal(afterGap.state, "tracking");
+  assert.deepEqual(afterGap.anchorMatrix, placed.anchorMatrix);
+  assert.equal(afterGap.motionAgeMs, 1480);
+  assert(Math.hypot(...afterGap.translationOverDistance) < 1e-6);
 });
-test("sensor permission/data absence expires pending tap and loss requires honest reposition", () => {
+test("missing gravity expires placement; occlusion retains and recovers the same anchor", () => {
   const session = new TrackingSession(360, 640),
     im = texture(360, 640);
   session.place([0.5, 0.5]);
   session.frame(im, 100);
-  assert.equal(session.frame(im, 2201).reason, "sensor-permission-or-data-unavailable");
-  assert.equal(session.frame(im, 2300).state, "unplaced");
-  session.motion([{ time: 2310, rate: { alpha: 0, beta: 0, gamma: 0 }, gravity }]);
+  assert.equal(session.frame(im, 3101).reason, "sensor-permission-or-data-unavailable");
+  assert.equal(session.frame(im, 3200).state, "unplaced");
+  session.motion([{ time: 3210, gravity }]);
   session.place([0.5, 0.5]);
-  assert.equal(session.frame(im, 2320).state, "tracking");
+  const placed = session.frame(im, 3220);
+  assert.equal(placed.state, "tracking");
   const blank = new Uint8Array(360 * 640);
-  for (let i = 0; i < 3; i++) assert.equal(session.frame(blank, 2330 + i * 10).state, "lost");
-  assert.equal(session.frame(im, 2360).state, "unplaced");
-  session.place([0.5, 0.5]);
-  assert.equal(session.frame(im, 2370).state, "tracking");
+  for (let i = 0; i < 8; i++) {
+    const lost = session.frame(blank, 3300 + i * 100);
+    assert.equal(lost.state, "recovering");
+    assert.equal(lost.referenceRetained, true);
+    assert.equal(lost.viewMatrix, undefined);
+  }
+  assert.equal(session.frame(im, 4200).reason, "confirming-reference");
+  const recovered = session.frame(im, 4300);
+  assert.equal(recovered.state, "tracking");
+  assert.deepEqual(recovered.anchorMatrix, placed.anchorMatrix);
+  assert.equal(recovered.recoveries, 1);
+  session.motion([{ time: 4400, gravity }]);
+  session.place([0.4, 0.6]);
+  const repositioned = session.frame(im, 4410);
+  assert.equal(repositioned.state, "tracking");
+  assert.notDeepEqual(repositioned.anchorMatrix, placed.anchorMatrix);
 });
 
 test("synthetic tilted-plane image replay fits gyro rotation plus camera translation", () => {

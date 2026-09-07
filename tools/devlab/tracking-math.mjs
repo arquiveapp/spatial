@@ -73,3 +73,135 @@ export function cameraMatrices(rotation, translation, camera, distance = 0.65) {
   ];
   return { viewMatrix, projectionMatrix };
 }
+
+// Original derivation of the plane-induced model H = K(R + (t/d)n^T)K^-1;
+// see OpenCV's camera-calibration documentation, decomposeHomographyMat:
+// https://docs.opencv.org/4.x/d9/d0c/group__calib3d.html
+// For orthonormal plane tangents a,b, B*a and B*b equal scaled R*a,R*b.
+// Their 3x2 polar factor determines a proper rotation; the normal column then
+// determines t/d. This assumes one rigid plane, a fixed initial unit normal,
+// estimated pinhole intrinsics, and a camera remaining on the initial side.
+// Neither metric distance nor camera calibration is measured by this fit.
+export function homographyPose(Hpixel, normal, camera, matches) {
+  if (
+    !Array.isArray(Hpixel) ||
+    Hpixel.length !== 9 ||
+    !Hpixel.every(Number.isFinite) ||
+    !Array.isArray(normal) ||
+    normal.length !== 3 ||
+    !normal.every(Number.isFinite) ||
+    !camera ||
+    ![camera.focal, camera.cx, camera.cy].every(Number.isFinite) ||
+    camera.focal <= 0
+  )
+    return null;
+  const normalLength = Math.hypot(...normal),
+    hScale = Math.max(...Hpixel.map(Math.abs));
+  if (normalLength < 1e-8 || hScale === 0) return null;
+  const n = normal.map((v) => v / normalLength),
+    seed = Math.abs(n[0]) < 0.8 ? [1, 0, 0] : [0, 1, 0],
+    a = unit(seed.map((v, i) => v - dot(seed, n) * n[i])),
+    b = cross(n, a),
+    f = camera.focal,
+    { cx, cy } = camera,
+    h = Hpixel.map((v) => v / hScale);
+  const apply = (m, v) => [dot(m.slice(0, 3), v), dot(m.slice(3, 6), v), dot(m.slice(6, 9), v)];
+  // Form B by mapping normalized optical-coordinate basis vectors through K,H,K^-1.
+  const columns = [
+    [f, 0, 0],
+    [0, f, 0],
+    [cx, cy, 1],
+  ].map((v) => {
+    const q = apply(h, v);
+    return [(q[0] - cx * q[2]) / f, (q[1] - cy * q[2]) / f, q[2]];
+  });
+  const B = Array.from({ length: 9 }, (_, i) => columns[i % 3][Math.floor(i / 3)]),
+    A = apply(B, a),
+    D = apply(B, b),
+    aa = dot(A, A),
+    ab = dot(A, D),
+    bb = dot(D, D),
+    trace = aa + bb,
+    determinant = aa * bb - ab * ab;
+  if (!(trace > 0 && determinant > trace * trace * 1e-8)) return null;
+  const rootDet = Math.sqrt(determinant),
+    sigmaSum = Math.sqrt(trace + 2 * rootDet),
+    scale = sigmaSum / 2,
+    inverseFactor = sigmaSum / ((aa + rootDet) * (bb + rootDet) - ab * ab),
+    u = A.map((v, i) => inverseFactor * ((bb + rootDet) * v - ab * D[i])),
+    v = D.map((value, i) => inverseFactor * ((aa + rootDet) * value - ab * A[i]));
+  // A rigid plane needs equal singular values in its two tangent directions.
+  const rigidityError = Math.sqrt(Math.max(0, 2 * trace - sigmaSum * sigmaSum)) / sigmaSum;
+  if (!Number.isFinite(rigidityError) || rigidityError > 0.12) return null;
+  let observations;
+  if (matches !== undefined) {
+    if (!Array.isArray(matches) || matches.length < 4) return null;
+    observations = matches;
+  } else {
+    const radius = f * 0.12;
+    observations = [
+      [cx, cy],
+      [cx - radius, cy - radius],
+      [cx + radius, cy - radius],
+      [cx + radius, cy + radius],
+      [cx - radius, cy + radius],
+    ].map((reference) => {
+      const q = apply(h, [...reference, 1]);
+      return { reference, current: [q[0] / q[2], q[1] / q[2]] };
+    });
+  }
+  if (
+    !observations.every(
+      (m) =>
+        Array.isArray(m?.reference) &&
+        m.reference.length === 2 &&
+        m.reference.every(Number.isFinite) &&
+        Array.isArray(m.current) &&
+        m.current.length === 2 &&
+        m.current.every(Number.isFinite),
+    )
+  )
+    return null;
+  // H is projective: try both signs, selecting only positive-depth, same-side pose.
+  for (const sign of [1, -1]) {
+    const U = u.map((value) => sign * value),
+      V = v.map((value) => sign * value),
+      N = cross(U, V),
+      rotation = Array.from({ length: 9 }, (_, i) => {
+        const row = Math.floor(i / 3),
+          col = i % 3;
+        return U[row] * a[col] + V[row] * b[col] + N[row] * n[col];
+      }),
+      rotatedNormal = apply(rotation, n),
+      bn = apply(B, n),
+      translationOverDistance = bn.map((value, i) => (sign * value) / scale - rotatedNormal[i]);
+    if (1 + dot(rotatedNormal, translationOverDistance) <= 1e-5) continue;
+    let squaredError = 0,
+      valid = true;
+    for (const { reference, current } of observations) {
+      const ray = [(reference[0] - cx) / f, (reference[1] - cy) / f, 1],
+        incidence = dot(n, ray);
+      if (incidence <= 1e-5) {
+        valid = false;
+        break;
+      }
+      const q = apply(
+        rotation,
+        ray.map((value) => value / incidence),
+      ).map((value, i) => value + translationOverDistance[i]);
+      if (q[2] <= 1e-5) {
+        valid = false;
+        break;
+      }
+      squaredError +=
+        ((f * q[0]) / q[2] + cx - current[0]) ** 2 + ((f * q[1]) / q[2] + cy - current[1]) ** 2;
+    }
+    if (valid) {
+      const reprojectionError = Math.sqrt(squaredError / observations.length);
+      // A substantially nonrigid homography must not become a plausible-looking pose.
+      if (!Number.isFinite(reprojectionError) || reprojectionError > 6) return null;
+      return { rotation, translationOverDistance, reprojectionError, rigidityError };
+    }
+  }
+  return null;
+}
