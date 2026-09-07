@@ -22,6 +22,23 @@ const mime = {
   ".txt": "text/plain; charset=utf-8",
   ".png": "image/png",
 };
+const browserFiles = new Set([
+  "index.html",
+  "style.css",
+  "phone.mjs",
+  "lab.mjs",
+  "feedback.mjs",
+  "model-viewer.mjs",
+  "video-rect.mjs",
+  "webxr.mjs",
+  "metrics.mjs",
+  "worker.mjs",
+  "patch.mjs",
+  "tabletop.mjs",
+  "tabletop-runtime.mjs",
+  "tabletop-replay.mjs",
+  "tracking-math.mjs",
+]);
 const vendor = new Set([
   "build/three.module.js",
   "build/three.core.js",
@@ -47,6 +64,7 @@ export function createLabServer({
   build = readBuild(root),
 }) {
   const submitted = [];
+  const currentBuild = () => (typeof build === "function" ? build() : build);
   const server = createServer(async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Referrer-Policy", "no-referrer");
@@ -88,10 +106,17 @@ export function createLabServer({
       }
       if (pathname === "/api/results" && req.method === "POST") {
         const origin = req.headers.origin;
+        let sameOrigin = false;
+        try {
+          const parsed = new URL(origin);
+          const protocol = req.headers["x-forwarded-proto"] === "https" ? "https:" : "http:";
+          sameOrigin = parsed.origin === `${protocol}//${req.headers.host}`;
+        } catch {
+          /* An absent, opaque or malformed Origin never authorizes a write. */
+        }
         if (
           req.headers["x-spatial-report"] !== "1" ||
-          !origin ||
-          new URL(origin).host !== req.headers.host ||
+          !sameOrigin ||
           !req.headers["content-type"]?.startsWith("application/json")
         ) {
           reply(403, { error: "Invalid report origin/type" });
@@ -120,7 +145,7 @@ export function createLabServer({
           return;
         }
         try {
-          const result = await storeReport(resultsDirectory, report, build);
+          const result = await storeReport(resultsDirectory, report, currentBuild());
           submitted.push(Date.now());
           reply(201, result);
         } catch (error) {
@@ -134,7 +159,7 @@ export function createLabServer({
       }
       if (pathname === "/lab-build.json") {
         reply(200, {
-          ...build,
+          ...currentBuild(),
           testerModel,
           models: models.map(({ id, name, bytes, sha256 }) => ({
             id,
@@ -155,7 +180,8 @@ export function createLabServer({
       else {
         const target = pathname === "/" ? "/tools/devlab/index.html" : pathname;
         if (
-          /^\/(tools\/devlab\/(?:[a-z-]+\.(?:mjs|html|css)|generated\/(?:luma\.(?:base|simd)\.wasm|build\.json|(?:EMSCRIPTEN-LICENSE|MUSL-COPYRIGHT|COMPILER-RT-LICENSE)\.txt))|packages\/core\/dist\/index\.js)$/.test(
+          (target.startsWith("/tools/devlab/") && browserFiles.has(target.slice(14))) ||
+          /^\/(tools\/devlab\/generated\/(?:luma\.(?:base|simd)\.wasm|build\.json|(?:EMSCRIPTEN-LICENSE|MUSL-COPYRIGHT|COMPILER-RT-LICENSE)\.txt)|packages\/core\/dist\/index\.js)$/.test(
             target,
           )
         )

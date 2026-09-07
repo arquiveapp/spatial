@@ -4,7 +4,7 @@ const root = process.cwd(),
   config = await loadLabConfig(root);
 const server = createLabServer({
   root,
-  build,
+  build: () => readBuild(root),
   models: config.models,
   testerModel: config.testerModel,
 });

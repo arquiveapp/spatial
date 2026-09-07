@@ -7,8 +7,8 @@
 | G0 current distribution rights | Local automated gate; zero third-party runtime/compiled tracker dependencies | Repeat exact-source review before any adoption              |
 | M0 toolchain                   | Digest-pinned 6.0.2, base/SIMD source builds                                 | Rebuild comparison with `build:wasm`                        |
 | G1 Android WebXR               | NOT RUN on phones                                                            | Two physical Androids, including 2019-class ARCore          |
-| G2 iOS capture                 | NOT RUN on phones                                                            | Two physical iPhones, iOS Safari; additional iOS Chrome run |
-| M1c tracking feasibility       | Synthetic diagnostic only                                                    | Physical static jitter and walk-around against reference    |
+| G2 iOS capture                 | One preliminary iPhone run; NOT PASSED                                       | Two physical iPhones, iOS Safari; additional iOS Chrome run |
+| M1c tracking feasibility       | Preliminary patch feedback; no ground truth                                  | Physical static jitter and walk-around against reference    |
 | G3 Stage 1 quality             | NOT RUN; M3 not implemented                                                  | Three iPhones and two non-WebXR Androids                    |
 | G4 supported row               | BLOCKED by missing evidence                                                  | Full row qualification below                                |
 
@@ -44,7 +44,7 @@ experiment from its button; permission denial is an outcome, never auto-retried.
   loop returning to the start. The JSON contains raw anchor transforms/time but no reference
   measurement. A cube drawn at a hit point before tapping is a preview, not an anchor.
 - **M1b:** run five minutes. Requested camera is 1280×720; record actual dimensions/settings.
-  Worker processes 640×360 luma. Export actual path, SIMD/base, fps, dropped bursts per 10 s,
+  Worker preserves aspect at a maximum of 640 pixels on the long edge and 230,400 total pixels (360×640 for portrait 9:16). Export actual path, SIMD/base, fps, dropped bursts per 10 s,
   worker/round-trip p50/p95, captureTime availability, IMU count/rate/jitter and observations.
   Pass target: >=24 processed fps, <1 dropped burst/10 s, approximately 60 Hz IMU with measured
   jitter. Hardware acceptance remains manual. Preferred TrackProcessor paths are pending;
@@ -55,7 +55,7 @@ experiment from its button; permission denial is an outcome, never auto-retried.
   renaming fields. Abort on loss, restart after rotation/backgrounding.
 
 Stop before export. Download is local and explicit. No export is automatically physical evidence
-or a PASS. Traces are capped at 36,000 samples; run beyond that cap requires a separate record.
+or a PASS. Legacy diagnostics retain up to 36,000 trace samples; tabletop retains 1,200 and outgoing reports sample to at most 600. These reduced exports are not complete replay recordings.
 The exported record is described by `tools/devlab/result.schema.json`; `physicalEvidence` is
 always false until a human-reviewed evidence document establishes physical provenance.
 Raw customer imagery, private models and sensitive user identifiers must never enter Git.

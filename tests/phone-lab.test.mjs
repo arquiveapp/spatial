@@ -27,7 +27,7 @@ async function fixture(fn) {
   const server = createLabServer({
     root,
     token,
-    build,
+    build: () => build,
     models: [
       {
         id: "apartment",
@@ -69,6 +69,9 @@ test("phone session gates files/models; invalid links and private paths stay una
       "/.local/lab-config.json",
       "/.env",
       "/package.json",
+      "/tools/devlab/server.mjs",
+      "/tools/devlab/mobile.mjs",
+      "/tools/devlab/reports.mjs",
       "/api/results",
       "/models/other.glb",
       "/tools/devlab/../../.local/results",
@@ -92,6 +95,8 @@ test("explicit report POST persists once, returns a receipt and rejects CSRF/med
       });
     assert.equal((await send(payload, { origin: "https://other.example" })).status, 403);
     assert.equal((await send(payload, { "x-spatial-report": "" })).status, 403);
+    for (const invalid of ["null", "malformed", origin.replace("http:", "https:")])
+      assert.equal((await send(payload, { origin: invalid })).status, 403);
     const response = await send(payload);
     assert.equal(response.status, 201);
     const receipt = await response.json();
@@ -114,6 +119,11 @@ test("report validation cannot promote support, traverse files or include camera
     { ...report(), outcome: "supported" },
     { ...report(), notes: ["data:image/jpeg;base64,AAAA"] },
     { ...report(), model: { password: "x" } },
+    { ...report(), model: { password: 123 } },
+    { ...report(), capture: { luma: [255, 128, 0] } },
+    { ...report(), capture: { luma: [0, 360] } },
+    { ...report(), camera: { luma: [640, 360] } },
+    { ...report(), scaleMode: "fabricated" },
   ])
     assert.throws(() => validateReport(value));
   assert.doesNotThrow(() =>
@@ -122,4 +132,163 @@ test("report validation cannot promote support, traverse files or include camera
       metrics: { frames: 120, trace: [{ time: 1, translation: [0, 0, 0] }] },
     }),
   );
+});
+
+// Synthetic shape of the Safari capture report that the old receiver rejected.
+// Contains no imported device report or camera pixels.
+test("Safari patch and tabletop report shapes survive authenticated HTTPS forwarding", async () =>
+  fixture(async ({ origin, token, root }) => {
+    const payload = {
+      ...report(),
+      kind: "patch",
+      scaleMode: "assumed",
+      capture: {
+        path: "rvfc-imagebitmap-worker-canvas",
+        requested: [1280, 720],
+        luma: [640, 360],
+        pixelFormat: "RGBA canvas readback",
+        captureTimeAvailable: true,
+      },
+      camera: { width: 720, height: 1280, frameRate: 30, facingMode: "environment" },
+      metrics: { frames: 120, trace: [{ time: 1, state: "lost", reason: "place-on-texture" }] },
+    };
+    const headers = {
+      cookie: `spatial_lab=${token}`,
+      "content-type": "application/json",
+      "x-spatial-report": "1",
+      "x-forwarded-proto": "https",
+      origin: origin.replace("http:", "https:"),
+    };
+    for (const kind of ["patch", "tabletop"]) {
+      const body = { ...payload, id: randomUUID(), kind };
+      const response = await fetch(`${origin}/api/results`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 201, JSON.stringify(await response.clone().json()));
+      const receipt = await response.json();
+      assert.equal(receipt.id, body.id);
+      const saved = JSON.parse(
+        await readFile(join(root, ".local/results", `${body.id}.json`), "utf8"),
+      );
+      assert.deepEqual(saved.report.capture.luma, [640, 360]);
+      assert.equal(saved.report.kind, kind);
+    }
+  }));
+
+test("build metadata is refreshed at page load and result receipt", async () =>
+  fixture(async ({ origin, token, root, build }) => {
+    const headers = { cookie: `spatial_lab=${token}` };
+    const first = await (await fetch(`${origin}/lab-build.json`, { headers })).json();
+    assert.equal(first.commit, build.commit);
+    build.commit = "b".repeat(40);
+    build.dirty = true;
+    const refreshed = await (await fetch(`${origin}/lab-build.json`, { headers })).json();
+    assert.equal(refreshed.commit, build.commit);
+    assert.equal(refreshed.dirty, true);
+    const payload = report();
+    const response = await fetch(`${origin}/api/results`, {
+      method: "POST",
+      headers: { ...headers, origin, "content-type": "application/json", "x-spatial-report": "1" },
+      body: JSON.stringify(payload),
+    });
+    assert.equal(response.status, 201);
+    const saved = JSON.parse(
+      await readFile(join(root, ".local/results", `${payload.id}.json`), "utf8"),
+    );
+    assert.deepEqual(saved.serverBuild, build);
+  }));
+
+test("documented report v2 envelope stays aligned with receiver kinds and fields", async () => {
+  const schema = JSON.parse(
+    await readFile(new URL("../tools/devlab/result.schema.json", import.meta.url), "utf8"),
+  );
+  assert.equal(schema.properties.schemaVersion.const, 2);
+  for (const kind of schema.properties.kind.enum)
+    assert.doesNotThrow(() =>
+      validateReport({
+        ...report(),
+        kind,
+        ...(kind === "synthetic-tabletop" ? { synthetic: true } : {}),
+      }),
+    );
+  for (const field of Object.keys(schema.properties)) {
+    if (
+      [
+        "schemaVersion",
+        "id",
+        "kind",
+        "userAgent",
+        "observations",
+        "physicalEvidence",
+        "outcome",
+      ].includes(field)
+    )
+      continue;
+    assert.doesNotThrow(() => validateReport({ ...report(), [field]: null }));
+  }
+  assert.throws(() => validateReport({ ...report(), kind: "unsupported" }));
+});
+
+test("synthetic tabletop replay stays explicitly labelled and cannot become a device run", () => {
+  assert.doesNotThrow(() =>
+    validateReport({ ...report(), kind: "synthetic-tabletop", synthetic: true }),
+  );
+  assert.throws(() => validateReport({ ...report(), kind: "synthetic-tabletop" }));
+  assert.throws(() => validateReport({ ...report(), kind: "tabletop", synthetic: true }));
+  assert.throws(() =>
+    validateReport({
+      ...report(),
+      kind: "synthetic-tabletop",
+      synthetic: true,
+      physicalEvidence: true,
+    }),
+  );
+});
+
+test("feedback export preserves bounded runtime errors and tabletop diagnostics", async () => {
+  const fake = {
+    window: { addEventListener() {} },
+    localStorage: { setItem() {} },
+    innerWidth: 393,
+    innerHeight: 852,
+    devicePixelRatio: 3,
+  };
+  const descriptors = Object.fromEntries(
+    Object.keys(fake).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]),
+  );
+  try {
+    for (const [key, value] of Object.entries(fake))
+      Object.defineProperty(globalThis, key, { value, configurable: true });
+    const { makeReport } = await import("../tools/devlab/feedback.mjs");
+    const exported = makeReport(
+      {
+        kind: "tabletop",
+        synthetic: false,
+        scaleMode: "assumed",
+        errors: [{ name: "NotAllowedError", message: "Camera denied /join/abcdef" }],
+        notes: ["Synthetic fixture only"],
+        capture: { luma: [640, 360] },
+        metrics: { frames: 10, calibration: "estimated", trace: [] },
+      },
+      {
+        build: { commit: "a".repeat(40), dirty: false },
+        device: {},
+        observations: "Fixture",
+        rating: "failed",
+      },
+    );
+    assert.deepEqual(exported.errors, [
+      { type: "NotAllowedError", message: "Camera denied /join/[redacted]" },
+    ]);
+    assert.deepEqual(exported.notes, ["Synthetic fixture only"]);
+    assert.equal(exported.metrics.calibration, "estimated");
+    assert.doesNotThrow(() => validateReport(exported));
+  } finally {
+    for (const key of Object.keys(fake)) {
+      if (descriptors[key]) Object.defineProperty(globalThis, key, descriptors[key]);
+      else delete globalThis[key];
+    }
+  }
 });

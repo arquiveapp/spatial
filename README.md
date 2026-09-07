@@ -2,7 +2,7 @@
 
 Framework-neutral browser AR research library. **M0 foundations and M1 lab experiments are
 implemented; production AR sessions, renderer adapters and device support are not.** No npm
-release exists. Every package remains private and every device row remains untested.
+release exists. Every package remains private and every device row remains unqualified. A preliminary phone report is documented; no support claim follows.
 
 ## Current API
 

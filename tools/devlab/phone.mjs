@@ -8,7 +8,11 @@ import {
   downloadReport,
 } from "./feedback.mjs";
 const $ = (id) => document.getElementById(id);
-let view = null,
+let tabletop = null,
+  tabletopController = null,
+  startTabletop = null,
+  createSyntheticSource = null,
+  view = null,
   viewController = null,
   current = null,
   modelReady = false,
@@ -19,17 +23,30 @@ let view = null,
 const status = (text) => {
   $("phone-status").textContent = text;
 };
+function disposeTabletop(reason = "user-stopped") {
+  if (tabletop) current = { ...tabletop.snapshot(), capabilities };
+  tabletop?.dispose(reason);
+  tabletopController?.abort();
+  tabletop = null;
+  tabletopController = null;
+  $("tabletop-start").disabled = !startTabletop || !build?.models.length;
+  $("tabletop-stop").disabled = true;
+  $("tabletop-adjustments").hidden = true;
+  $("tabletop-surface").hidden = true;
+}
 function disposeView() {
   viewController?.abort();
   viewController = null;
   view?.dispose();
   view = null;
   modelReady = false;
+  $("model-surface").classList.remove("opened");
   $("model-ar").disabled = true;
   $("model-stop").disabled = true;
   $("xr-place").hidden = true;
 }
 function snapshot() {
+  if (tabletop) current = { ...tabletop.snapshot(), capabilities };
   if (view && current)
     current = { ...current, model: view.snapshot(), endedAt: new Date().toISOString() };
   return current ?? getLabReport();
@@ -53,6 +70,7 @@ function updateDraft() {
 window.addEventListener("spatial-lab-start", (e) => {
   if (view && current) current.model = view.snapshot();
   disposeView();
+  disposeTabletop("another-test-started");
   current = null;
   pendingReport = null;
   pendingSubmission = null;
@@ -69,8 +87,14 @@ window.addEventListener("spatial-lab-finished", (e) => {
 window.addEventListener("pagehide", () => {
   updateDraft();
   disposeView();
+  disposeTabletop("page-hidden");
 });
 document.addEventListener("visibilitychange", () => {
+  if (document.hidden && tabletopController) {
+    disposeTabletop("page-hidden");
+    updateDraft();
+    status("Teste de mesa encerrado ao sair do Safari. Toque em Ver na minha mesa para reiniciar.");
+  }
   if (document.hidden && view) {
     updateDraft();
     disposeView();
@@ -79,6 +103,7 @@ document.addEventListener("visibilitychange", () => {
 });
 $("model-open").onclick = async () => {
   stopLab();
+  disposeTabletop("viewer-opened");
   disposeView();
   pendingReport = null;
   pendingSubmission = null;
@@ -175,6 +200,102 @@ $("model-ar").onclick = async () => {
   }
 };
 $("xr-place").onclick = () => view?.place();
+async function openTabletop(synthetic = false) {
+  if (!startTabletop || !build?.models.length) return;
+  stopLab();
+  disposeView();
+  disposeTabletop("restarted");
+  const controller = new AbortController();
+  tabletopController = controller;
+  pendingReport = null;
+  pendingSubmission = null;
+  const model = build.models.find((m) => m.id === $("model-choice").value) ?? build.models[0];
+  current = {
+    kind: "tabletop",
+    startedAt: new Date().toISOString(),
+    capabilities,
+    scaleMode: "assumed",
+    model: { id: model.id, name: model.name, sha256: model.sha256 },
+  };
+  $("tabletop-start").disabled = true;
+  $("tabletop-stop").disabled = false;
+  $("tabletop-surface").hidden = false;
+  $("tabletop-size").value = "1";
+  $("tabletop-rotation").value = "0";
+  $("tabletop-size-value").textContent = "1×";
+  $("tabletop-rotation-value").textContent = "0°";
+  status("Permita câmera e movimento. Depois aponte para uma mesa com textura.");
+  recordEvent("tabletop-start", { model: model.id });
+  // Module is preloaded. Permission requests happen in this click before its first await.
+  try {
+    const pending = startTabletop({
+      container: $("tabletop-surface"),
+      model,
+      signal: controller.signal,
+      ...(synthetic ? { syntheticSource: createSyntheticSource() } : {}),
+      wasmUrl: `/tools/devlab/generated/luma.${capabilities?.wasm.simd ? "simd" : "base"}.wasm`,
+      onStatus: (detail) => {
+        if (controller.signal.aborted) return;
+        $("tabletop-status").textContent = detail.message;
+        recordEvent("tabletop-state", detail);
+      },
+      onReport: (report) => {
+        if (tabletopController !== controller) return;
+        current = { ...report, capabilities };
+        tabletop = null;
+        tabletopController = null;
+        controller.abort();
+        disposeTabletop();
+        status(`Teste encerrado: ${report.stopReason ?? "finalizado"}. Envie o resultado abaixo.`);
+        updateDraft();
+      },
+    });
+    $("tabletop-surface").scrollIntoView({ block: "center", behavior: "smooth" });
+    const next = await pending;
+    if (controller.signal.aborted) {
+      next.dispose("cancelled");
+      return;
+    }
+    tabletop = next;
+    $("tabletop-adjustments").hidden = false;
+    status(
+      synthetic
+        ? "SIMULAÇÃO: toque na textura para verificar a renderização. Este teste não usa câmera real nem comprova AR no aparelho."
+        : "Toque numa região com textura da mesa para colocar o apartamento.",
+    );
+  } catch (error) {
+    if (!controller.signal.aborted) {
+      recordEvent("tabletop-error", { message: error.message });
+      current.stopReason = error.message;
+      current.endedAt = new Date().toISOString();
+      disposeTabletop("startup-failed");
+      $("tabletop-status").textContent = error.message;
+      status(`Não consegui iniciar o teste de mesa: ${error.message}`);
+      updateDraft();
+    }
+  }
+}
+$("tabletop-start").onclick = () => openTabletop();
+$("tabletop-replay").onclick = () => openTabletop(true);
+$("tabletop-stop").onclick = () => {
+  disposeTabletop("user-stopped");
+  updateDraft();
+  status("Teste de mesa encerrado. Conta como foi e envia o resultado abaixo.");
+};
+$("tabletop-reposition").onclick = () => {
+  tabletop?.reposition();
+  recordEvent("tabletop-reposition", {});
+};
+$("tabletop-size").oninput = (event) => {
+  const value = Number(event.target.value);
+  tabletop?.setScale(value);
+  $("tabletop-size-value").textContent = `${value.toFixed(1)}×`;
+};
+$("tabletop-rotation").oninput = (event) => {
+  const value = Number(event.target.value);
+  tabletop?.setRotation((value * Math.PI) / 180);
+  $("tabletop-rotation-value").textContent = `${value}°`;
+};
 $("send").onclick = async () => {
   if (!build) return;
   const report = pendingSubmission ?? updateDraft();
@@ -240,6 +361,10 @@ try {
     }),
   );
   $("model-open").disabled = !build.models.length;
+  ({ startTabletop } = await import("./tabletop.mjs"));
+  ({ createSyntheticSource } = await import("./tabletop-replay.mjs"));
+  $("tabletop-replay").disabled = !build.models.length;
+  $("tabletop-start").disabled = !build.models.length;
   $("device").value =
     build.testerModel ?? (/iPhone/.test(navigator.userAgent) ? "iPhone (informe o modelo)" : "");
   const os = /OS ([\d_]+)/.exec(navigator.userAgent)?.[1];
@@ -249,12 +374,12 @@ try {
   $("ar-note").textContent =
     capabilities.webxr.immersiveAr === true
       ? "WebXR detectado: após abrir o modelo, tu pode experimentar a colocação na mesa."
-      : "Este navegador não oferece WebXR imersivo. Aqui tu pode testar o apartamento 3D e, abaixo, câmera e rastreamento experimental.";
+      : "O teste de mesa acima usa câmera e sensores do navegador, com rastreamento experimental. Este modo abaixo é apenas 3D.";
   $("send").disabled = false;
   $("export").disabled = false;
   recordEvent("opened", { secureContext: isSecureContext, capabilities });
   if (restoreDraft()) $("restore").hidden = false;
-  status("Comece abrindo o apartamento. Depois teste a câmera e envie o que aconteceu.");
+  status("O teste de mesa está pronto. Inicie, permita câmera e movimento e toque na mesa.");
 } catch (error) {
   status(error.message);
   recordEvent("startup-error", { message: error.message });

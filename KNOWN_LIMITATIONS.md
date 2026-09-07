@@ -2,7 +2,7 @@
 
 - No production session, model loader, fallback viewer, renderer adapter or tracking backend
   exists yet. Workspace imports other than core/root intentionally expose no runtime API.
-- No physical Android/iPhone tests or support claims. Generic OS/browser versions from the
+- One preliminary user-reported iPhone 16 run exists; no physical acceptance gates or support claims. Generic OS/browser versions from the
   research brief have not been adopted as compatibility promises.
 - The capture spike currently measures ImageBitmap → Worker canvas → luma WASM, or an explicitly
   reported slower main-thread canvas path. TrackProcessor and direct VideoFrame paths are pending;
@@ -10,7 +10,7 @@
 - The single-threaded kernels perform luma/checksum diagnostics only. They are not a VIO engine.
   No SharedArrayBuffer or cross-origin isolation is required.
 - M1c is an original, unshipped direct photometric planar prototype: portrait rear-camera sensor
-  mapping, assumed 65° horizontal field of view, still gravity prior, relative translation.
+  mapping, assumed 65° long-edge field of view, still gravity prior, relative translation.
   It has no measured camera/IMU alignment, metric scale, visual yaw correction, robust feature
   RANSAC, patch expansion or relocalisation. Fast motion, lighting/exposure changes, rolling
   shutter, gyro drift and leaving the patch can invalidate the fit. A low residual is not accuracy.
@@ -25,7 +25,7 @@
 
 ## Phone lab extension
 
-A three.js GLB viewer and WebXR model-placement experiment now exist in the local lab only;
+A three.js GLB viewer, WebXR model experiment and portrait-only camera/planar tabletop flow exist in the local lab only;
 public session/renderer packages remain unimplemented. The temporary HTTPS link requires the Mac,
 cloudflared and internet to remain available. Model originals and received reports stay outside
 Git/npm. The report button sends structured diagnostics/comments only, and never promotes support.

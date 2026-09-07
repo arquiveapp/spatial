@@ -15,7 +15,7 @@ const server = createLabServer({
   token,
   models: config.models,
   testerModel: config.testerModel,
-  build,
+  build: () => readBuild(root),
 });
 await new Promise((resolve, reject) => {
   server.once("error", reject);

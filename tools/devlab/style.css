@@ -281,3 +281,37 @@ footer {
     font-size: 21px;
   }
 }
+
+#tabletop-surface {
+  position: relative;
+  height: 560px;
+  height: min(65svh, 560px);
+  min-height: 360px;
+  width: 100%;
+  overflow: hidden;
+  border-radius: 12px;
+  background: #17251c;
+  touch-action: none;
+}
+#tabletop-surface video {
+  display: block;
+  max-height: none;
+}
+#tabletop-status {
+  font-size: 14px;
+  color: #365d43;
+}
+.tabletop-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.tabletop-fields label {
+  position: relative;
+}
+.tabletop-fields output {
+  font-variant-numeric: tabular-nums;
+}
+input[type="range"] {
+  padding: 8px 0;
+  accent-color: #254d38;
+  min-height: 44px;
+}

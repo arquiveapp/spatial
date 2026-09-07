@@ -24,13 +24,22 @@ for (const record of records) {
         receipt: `SP-${r.id.slice(0, 8).toUpperCase()}`,
         receivedAt: record.receivedAt,
         kind: r.kind,
+        synthetic: r.synthetic ?? false,
         device: r.device,
         rating: r.rating,
         observations: r.observations,
         stopReason: r.stopReason,
         fps: r.metrics?.fps,
         imuHz: r.metrics?.imuHz,
-        workerP95: r.metrics?.workerMs?.p95,
+        workerP95: r.metrics?.workerMs?.p95 ?? r.metrics?.engineMs?.p95,
+        frames: r.metrics?.frames,
+        placements: r.metrics?.placements,
+        scaleMode: r.scaleMode,
+        trackingSamples: r.metrics?.trace?.reduce((counts, sample) => {
+          const key = `${sample.state}${sample.reason ? `: ${sample.reason}` : ""}`;
+          counts[key] = (counts[key] ?? 0) + 1;
+          return counts;
+        }, {}),
         model: r.model,
         errors: r.errors,
         sourceCommit: r.build?.commit,

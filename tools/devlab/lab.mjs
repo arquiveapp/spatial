@@ -1,5 +1,6 @@
 import { probe } from "/packages/core/dist/index.js";
 import { Metrics } from "./metrics.mjs";
+import { processingSize } from "./tracking-math.mjs";
 import { containedRect } from "./video-rect.mjs";
 import { startXR } from "./webxr.mjs";
 const $ = (id) => document.getElementById(id),
@@ -151,13 +152,14 @@ async function capture(patch) {
       videoWidth: video.videoWidth,
       videoHeight: video.videoHeight,
     };
+    const [width, height] = processingSize(video.videoWidth, video.videoHeight);
     report.capture = {
       path:
         typeof createImageBitmap === "function"
           ? "rvfc-imagebitmap-worker-canvas"
           : "rvfc-main-canvas",
       requested: [1280, 720],
-      luma: [640, 360],
+      luma: [width, height],
       pixelFormat: "RGBA canvas readback",
       captureTimeAvailable: false,
       preferredTrackProcessorPath: "not-implemented-in-this-spike",
@@ -191,6 +193,8 @@ async function capture(patch) {
         };
         worker.postMessage({
           type: "init",
+          width,
+          height,
           wasmUrl: new URL(`./generated/luma.${variant}.wasm`, import.meta.url).href,
         });
       });
@@ -261,8 +265,8 @@ async function capture(patch) {
             video.videoHeight,
           );
           const box = $("preview").getBoundingClientRect();
-          marker.style.left = `${content.left - box.left + (t.screen[0] / 640) * content.width}px`;
-          marker.style.top = `${content.top - box.top + (t.screen[1] / 360) * content.height}px`;
+          marker.style.left = `${content.left - box.left + (t.screen[0] / width) * content.width}px`;
+          marker.style.top = `${content.top - box.top + (t.screen[1] / height) * content.height}px`;
         }
         status(
           t.state === "tracking"
@@ -272,8 +276,8 @@ async function capture(patch) {
       }
     };
     const canvas = document.createElement("canvas");
-    canvas.width = 640;
-    canvas.height = 360;
+    canvas.width = width;
+    canvas.height = height;
     const context = canvas.getContext("2d", { willReadFrequently: true });
     run.rvfc = typeof video.requestVideoFrameCallback === "function";
     let previousTime = -1,
@@ -314,8 +318,8 @@ async function capture(patch) {
           }
           worker.postMessage({ type: "frame", bitmap, sent, patch }, [bitmap]);
         } else {
-          context.drawImage(video, 0, 0, 640, 360);
-          const rgba = context.getImageData(0, 0, 640, 360).data.buffer;
+          context.drawImage(video, 0, 0, width, height);
+          const rgba = context.getImageData(0, 0, width, height).data.buffer;
           worker.postMessage({ type: "frame", rgba, sent, patch }, [rgba]);
         }
       } catch (e) {

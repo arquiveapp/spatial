@@ -50,3 +50,17 @@ configuration, a three.js lab viewer/experimental WebXR model path and explicit 
 These live under tools/devlab and remain outside all library tarballs. They do not implement or
 promote the M2 renderer package. Camera/IMU tracking and physical support gates remain unchanged.
 See [mobile lab](mobile-lab.md) for the scoped transport exception and result workflow.
+
+## Authorized integrated tabletop lab — 2026-09-07
+
+After the first phone feedback, the user explicitly requested the complete tabletop experience
+in the testing area, with subagent implementation and another phone test before publication.
+This authorizes lab-only session/render/tracker integration while the physical gates are still
+open; it does not waive those gates or authorize npm release. The agreed primary experience
+stays in the browser with no Quick Look, Scene Viewer or app handoff.
+
+The lab now binds original planar tracking to the real GLB through explicit view/projection and
+anchor matrices, portrait-preserving capture, placement/reposition/scale/rotation, loss coaching,
+and bounded resource lifecycle. Tracking is JavaScript in a Worker; the existing original WASM
+kernel converts luma only. This is not a production C++ VIO engine or Stage 2. Estimated intrinsics,
+assumed plane distance and no patch expansion/relocalisation remain explicit limitations.

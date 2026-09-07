@@ -7,6 +7,11 @@ by [the maintenance policy](https://github.com/arquiveapp/spatial/blob/main/docs
 
 ### Added
 
+- Complete experimental tabletop lab flow: portrait camera/Worker tracking drives GLB placement,
+  repositioning, scale and rotation, with explicit loss handling and synthetic renderer replay.
+- Preliminary iPhone feedback analysis; correct report validation for scale/luma dimensions and
+  preserve runtime errors. Public packages remain private and their runtime API is unchanged.
+
 - Phone-test laboratory with optional temporary HTTPS access, local-only GLB fixtures, explicit
   non-AR viewer/experimental WebXR model placement, and receipt-based diagnostic submission to
   the Mac. No camera uploads or changes to the public renderer API.

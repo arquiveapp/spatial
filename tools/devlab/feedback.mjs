@@ -45,8 +45,13 @@ export function makeReport(base, { build, device, observations, rating, id }) {
     device,
     observations: observations.slice(0, 4000),
     rating,
-    events: [...events],
-    errors: [...errors],
+    events: [...(Array.isArray(base?.events) ? base.events : []), ...events].slice(-300),
+    errors: [...(Array.isArray(base?.errors) ? base.errors : []).slice(-30), ...errors].map(
+      (error) => ({
+        type: cleanText(error?.type ?? error?.name ?? "error", 100),
+        message: cleanText(error?.message ?? error),
+      }),
+    ),
     metrics,
     viewport: { width: innerWidth, height: innerHeight, pixelRatio: devicePixelRatio },
     physicalEvidence: false,
@@ -60,15 +65,41 @@ export function makeReport(base, { build, device, observations, rating, id }) {
   return result;
 }
 export async function submitReport(report) {
-  const response = await fetch("/api/results", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Spatial-Report": "1" },
-    body: JSON.stringify(report),
-    signal: AbortSignal.timeout(15000),
-  });
-  const result = await response.json();
-  if (!response.ok) throw Error(result.error ?? `HTTP ${response.status}`);
-  return result;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch("/api/results", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Spatial-Report": "1" },
+      body: JSON.stringify(report),
+      signal: controller.signal,
+    });
+    let result;
+    try {
+      result = await response.json();
+    } catch {
+      throw Error(
+        "O endereço de teste não respondeu. Baixe o JSON ou reabra o link completo e tente novamente.",
+      );
+    }
+    if (!response.ok) throw Error(result.error ?? `HTTP ${response.status}`);
+    if (
+      !result.saved ||
+      result.id !== report.id ||
+      result.receipt !== `SP-${report.id.slice(0, 8).toUpperCase()}`
+    )
+      throw Error("O Mac não confirmou o recibo. Tente novamente ou baixe o JSON.");
+    return result;
+  } catch (error) {
+    if (controller.signal.aborted)
+      throw Error(
+        "O envio demorou demais. Tente novamente; o mesmo resultado não será duplicado. Você também pode baixar o JSON.",
+      );
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 export function downloadReport(report) {
   const url = URL.createObjectURL(

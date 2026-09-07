@@ -1,24 +1,46 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Spatial unreviewed lab export",
+  "title": "Spatial unreviewed lab export v2",
+  "$comment": "Documents the accepted export envelope. The local receiver additionally enforces a 1 MiB body limit, depth and array limits, and rejects credential or media payloads. capture.luma may contain only two positive integer dimensions, not pixels. Physical qualification requires separate evidence review.",
   "type": "object",
+  "additionalProperties": false,
   "required": [
     "schemaVersion",
+    "id",
     "kind",
-    "build",
-    "device",
-    "startedAt",
-    "endedAt",
+    "userAgent",
+    "observations",
     "physicalEvidence",
-    "outcome",
-    "metrics"
+    "outcome"
   ],
   "properties": {
     "schemaVersion": {
-      "const": 1
+      "const": 2
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
     },
     "kind": {
-      "enum": ["webxr", "capture", "patch"]
+      "enum": [
+        "viewer-3d",
+        "model-webxr",
+        "webxr",
+        "capture",
+        "patch",
+        "tabletop",
+        "diagnostic",
+        "synthetic",
+        "synthetic-tabletop"
+      ]
+    },
+    "userAgent": {
+      "type": "string",
+      "maxLength": 1000
+    },
+    "observations": {
+      "type": "string",
+      "maxLength": 4000
     },
     "physicalEvidence": {
       "const": false
@@ -26,50 +48,136 @@
     "outcome": {
       "const": "unreviewed"
     },
-    "build": {
-      "type": "object",
-      "required": ["commit", "dirty"],
-      "properties": {
-        "commit": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{40}$"
-        },
-        "dirty": {
-          "type": "boolean"
-        }
-      }
-    },
-    "device": {
-      "type": "object",
-      "required": ["model", "osBuild", "browserBuild"],
-      "properties": {
-        "model": {
-          "type": "string",
-          "minLength": 1
-        },
-        "osBuild": {
-          "type": "string",
-          "minLength": 1
-        },
-        "browserBuild": {
-          "type": "string",
-          "minLength": 1
-        }
-      }
+    "scaleMode": {
+      "enum": ["assumed", "metric", "unknown", null]
     },
     "startedAt": {
-      "type": "string",
-      "format": "date-time"
+      "$ref": "#/$defs/diagnostic"
     },
     "endedAt": {
-      "type": "string",
-      "format": "date-time"
+      "$ref": "#/$defs/diagnostic"
+    },
+    "build": {
+      "$ref": "#/$defs/diagnostic"
+    },
+    "device": {
+      "$ref": "#/$defs/diagnostic"
+    },
+    "rating": {
+      "$ref": "#/$defs/diagnostic"
+    },
+    "capabilities": {
+      "$ref": "#/$defs/diagnostic"
     },
     "metrics": {
-      "type": ["object", "null"]
+      "$ref": "#/$defs/diagnostic"
     },
-    "scaleMode": {
-      "enum": ["metric", "assumed"]
+    "capture": {
+      "$ref": "#/$defs/diagnostic"
+    },
+    "camera": {
+      "$ref": "#/$defs/diagnostic"
+    },
+    "wasm": {
+      "$ref": "#/$defs/diagnostic"
+    },
+    "motionPermission": {
+      "$ref": "#/$defs/diagnostic"
+    },
+    "notes": {
+      "$ref": "#/$defs/diagnostic"
+    },
+    "stopReason": {
+      "$ref": "#/$defs/diagnostic"
+    },
+    "tracking": {
+      "$ref": "#/$defs/diagnostic"
+    },
+    "features": {
+      "$ref": "#/$defs/diagnostic"
+    },
+    "model": {
+      "$ref": "#/$defs/diagnostic"
+    },
+    "events": {
+      "$ref": "#/$defs/diagnostic"
+    },
+    "errors": {
+      "$ref": "#/$defs/diagnostic"
+    },
+    "synthetic": {
+      "type": ["boolean", "null"]
+    },
+    "viewport": {
+      "$ref": "#/$defs/diagnostic"
     }
-  }
+  },
+  "$defs": {
+    "diagnostic": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string",
+          "maxLength": 6000
+        },
+        {
+          "type": "array",
+          "maxItems": 2000,
+          "items": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/diagnostic"
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "synthetic-tabletop"
+          }
+        }
+      },
+      "then": {
+        "required": ["synthetic"],
+        "properties": {
+          "synthetic": {
+            "const": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["synthetic"],
+        "properties": {
+          "synthetic": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "enum": ["synthetic", "synthetic-tabletop"]
+          }
+        }
+      }
+    }
+  ]
 }
