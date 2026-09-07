@@ -132,7 +132,7 @@ export function homographyPose(Hpixel, normal, camera, matches) {
     v = D.map((value, i) => inverseFactor * ((aa + rootDet) * value - ab * A[i]));
   // A rigid plane needs equal singular values in its two tangent directions.
   const rigidityError = Math.sqrt(Math.max(0, 2 * trace - sigmaSum * sigmaSum)) / sigmaSum;
-  if (!Number.isFinite(rigidityError) || rigidityError > 0.12) return null;
+  if (!Number.isFinite(rigidityError) || rigidityError > 0.15) return null;
   let observations;
   if (matches !== undefined) {
     if (!Array.isArray(matches) || matches.length < 4) return null;
@@ -199,7 +199,9 @@ export function homographyPose(Hpixel, normal, camera, matches) {
     if (valid) {
       const reprojectionError = Math.sqrt(squaredError / observations.length);
       // A substantially nonrigid homography must not become a plausible-looking pose.
-      if (!Number.isFinite(reprojectionError) || reprojectionError > 6) return null;
+      // Assumed intrinsics make the rigid residual grow with viewpoint change; a
+      // hand or mixed-depth fit is far beyond this cap.
+      if (!Number.isFinite(reprojectionError) || reprojectionError > 9) return null;
       return { rotation, translationOverDistance, reprojectionError, rigidityError };
     }
   }

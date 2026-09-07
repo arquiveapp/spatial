@@ -253,12 +253,12 @@ test("session validates the gyro mapping, predicts flow, and bridges a short vis
   assert.equal(result.gyro.mapping, "-b,+g,+a");
   assert.ok(result.gyro.residualRatio < 0.5, `ratio ${result.gyro.residualRatio}`);
   // Occlusion: blank frames while the phone keeps panning; the model is bridged by the
-  // validated gyro (not frozen) for a bounded time, then hidden, never re-anchored.
+  // validated gyro (not frozen) for up to 2.5 s, then hidden, never re-anchored.
   const anchor = [...result.anchorMatrix];
   const blank = new Uint8Array(w * h).fill(120);
-  const pan = { alpha: 0, beta: 0, gamma: 8 };
+  const pan = { alpha: 0, beta: 0, gamma: 6 };
   const states = [];
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 90; i++) {
     session.motion([
       { time: state.time + 16, rate: pan, gravity, interval: 16 },
       { time: state.time + 32, rate: pan, gravity, interval: 16 },
@@ -271,16 +271,16 @@ test("session validates the gyro mapping, predicts flow, and bridges a short vis
     if (lost.state === "bridging") {
       assert.equal(lost.predicted, true);
       assert.equal(lost.frozen, false);
-      assert.ok(lost.bridgedMs <= 1500);
+      assert.ok(lost.bridgedMs <= 2500);
       assert.ok(Array.isArray(lost.viewMatrix));
     }
   }
   assert.ok(
-    states.slice(0, 45).every((s) => s === "bridging"),
+    states.slice(0, 75).every((s) => s === "bridging"),
     states.join(","),
   );
   assert.ok(
-    states.slice(46).every((s) => s === "recovering"),
+    states.slice(77).every((s) => s === "recovering"),
     states.join(","),
   );
   // The surface returns where the gyro predicted it: accepted at once, same anchor.
@@ -373,6 +373,66 @@ test("scanning builds a provisional map, offers placement after a swept surface,
   assert.notDeepEqual(again.anchorMatrix, placed.anchorMatrix);
   assert.equal(session.features.reference, reference);
   assert.ok(Math.hypot(again.screen[0] - (0.3 * w - 4), again.screen[1] - (0.5 * h + 2)) < 2);
+});
+
+test("the plane filter keeps only map points below the horizon and within three placement depths", () => {
+  // Phone tilted only ~24 degrees from vertical, looking mostly across the room: the
+  // floor fills the lower part of the image and the horizon crosses it near y=100.
+  const fixture = sessionFixture(),
+    { w, h, session, frameAt } = fixture;
+  session.gravitySamples = [];
+  const tilted = { x: 0, y: 8.99, z: 3.93 }; // |g| 9.81
+  session.gravity = tilted;
+  session.motion([
+    { time: 0, gravity: tilted },
+    { time: 16, gravity: tilted },
+    { time: 32, gravity: tilted },
+  ]);
+  const first = session.frame(frameAt(identity()), 40);
+  assert.equal(first.state, "scanning", first.reason);
+  assert.equal(typeof session.features.planeFilter, "function");
+  const filter = session.features.planeFilter;
+  assert.equal(filter([w / 2, h * 0.58]), true, "placement centre is on the plane");
+  assert.equal(filter([w / 2, h * 0.95]), true, "floor below the centre is closer");
+  assert.equal(filter([w / 2, 2]), false, "top of the image is above the horizon");
+  assert.equal(filter([w / 2, 150]), false, "floor near the horizon is beyond three depths");
+  // After sliding for a while, every map feature still satisfies the filter.
+  let time = 40;
+  for (let i = 1; i <= 20; i++) {
+    time += 33;
+    session.frame(frameAt([1, 0, -3 * i, 0, 1, 2 * i, 0, 0, 1]), time);
+  }
+  assert.ok(session.features.features.length >= 30);
+  assert.ok(session.features.features.every((f) => filter(f.p)));
+});
+
+test("the predicted homography keeps the floor when a large off-plane object slides across it", () => {
+  // Floor plus a large textured object covering the upper-left ~40% of the view and
+  // sliding the opposite way (+4, -3 px per frame versus the floor's -3, +2). Without a
+  // prediction the object can outvote the floor; with it the floor wins every frame.
+  // Residual drift of a few pixels over 35 frames remains: features created while the
+  // object hid the original region inherit small fit bias (no global optimisation).
+  const floor = world(),
+    object = world(700, 700, 5),
+    tracker = new FeaturePlane(width, height);
+  tracker.place(view(floor, identity()), 120, 160);
+  let previous = identity();
+  for (let step = 1; step <= 35; step++) {
+    const h = translation(-3 * step, 2 * step),
+      frame = view(floor, h);
+    for (let y = 0; y < 190; y++)
+      for (let x = 0; x < 150; x++) {
+        const u = 200 + x - 4 * step,
+          v = 200 + y + 3 * step;
+        frame[y * width + x] = object.image[v * object.w + u];
+      }
+    // The session's seed: exact inter-frame motion, as a well-calibrated gyro would give
+    // for rotation; here the synthetic motion is a translation of the same magnitude.
+    const delta = [1, 0, h[2] - previous[2], 0, 1, h[5] - previous[5], 0, 0, 1];
+    const result = tracker.track(frame, delta);
+    assertGeometry(result, h, step <= 12 ? 1.5 : 6);
+    previous = h;
+  }
 });
 
 test("gyro integrates real rotation whether the interval arrives in ms or iOS seconds", () => {

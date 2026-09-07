@@ -81,28 +81,11 @@ function sample(level, x, y) {
     (d[k + level.width] * (1 - a) + d[k + level.width + 1] * a) * b
   );
 }
-function sampleArray(level, array, x, y) {
-  const ix = x | 0,
-    iy = y | 0,
-    a = x - ix,
-    b = y - iy,
-    k = iy * level.width + ix;
-  return (
-    (array[k] * (1 - a) + array[k + 1] * a) * (1 - b) +
-    (array[k + level.width] * (1 - a) + array[k + level.width + 1] * a) * b
-  );
-}
 class Pyramid {
   constructor(width, height) {
     this.levels = [];
     for (let l = 0, w = width, h = height; l < LEVELS; l++) {
-      this.levels.push({
-        width: w,
-        height: h,
-        data: new Float32Array(w * h),
-        gx: new Float32Array(w * h),
-        gy: new Float32Array(w * h),
-      });
+      this.levels.push({ width: w, height: h, data: new Float32Array(w * h) });
       w = Math.floor(w / 2);
       h = Math.floor(h / 2);
     }
@@ -112,44 +95,50 @@ class Pyramid {
     const base = this.levels[0];
     if (luma.length !== base.width * base.height) throw Error("Invalid grayscale frame size");
     base.data.set(luma);
-    const kernel = [1, 4, 6, 4, 1];
+    // Separable [1 4 6 4 1]/16 binomial downsample. Border clamping is hoisted out of
+    // the inner loops; gradients are no longer precomputed for whole levels (they are
+    // sampled on demand where features are), which was the dominant phone cost.
     for (let l = 1; l < LEVELS; l++) {
       const prev = this.levels[l - 1],
         next = this.levels[l],
         tmp = this.scratch,
+        pw = prev.width,
+        ph = prev.height,
+        pd = prev.data,
+        nd = next.data,
         w = next.width,
         h = next.height;
-      for (let y = 0; y < prev.height; y++) {
-        const row = y * prev.width,
+      for (let y = 0; y < ph; y++) {
+        const row = y * pw,
           out = y * w;
-        for (let x = 0; x < w; x++) {
+        for (let x = 1; x < w - 1; x++) {
+          const c = row + 2 * x;
+          tmp[out + x] = pd[c - 2] + 4 * pd[c - 1] + 6 * pd[c] + 4 * pd[c + 1] + pd[c + 2];
+        }
+        for (const x of [0, w - 1]) {
           let sum = 0;
-          for (let k = -2; k <= 2; k++) {
-            const sx = Math.max(0, Math.min(prev.width - 1, 2 * x + k));
-            sum += prev.data[row + sx] * kernel[k + 2];
-          }
+          for (let k = -2; k <= 2; k++)
+            sum += pd[row + Math.max(0, Math.min(pw - 1, 2 * x + k))] * [1, 4, 6, 4, 1][k + 2];
           tmp[out + x] = sum;
         }
       }
-      for (let y = 0; y < h; y++)
+      for (let y = 1; y < h - 1; y++) {
+        const r0 = (2 * y - 2) * w,
+          r1 = (2 * y - 1) * w,
+          r2 = 2 * y * w,
+          r3 = (2 * y + 1) * w,
+          r4 = (2 * y + 2) * w,
+          out = y * w;
+        for (let x = 0; x < w; x++)
+          nd[out + x] =
+            (tmp[r0 + x] + 4 * tmp[r1 + x] + 6 * tmp[r2 + x] + 4 * tmp[r3 + x] + tmp[r4 + x]) / 256;
+      }
+      for (const y of [0, h - 1])
         for (let x = 0; x < w; x++) {
           let sum = 0;
-          for (let k = -2; k <= 2; k++) {
-            const sy = Math.max(0, Math.min(prev.height - 1, 2 * y + k));
-            sum += tmp[sy * w + x] * kernel[k + 2];
-          }
-          next.data[y * w + x] = sum / 256;
-        }
-    }
-    for (const level of this.levels) {
-      const { width: w, height: h, data, gx, gy } = level;
-      gx.fill(0);
-      gy.fill(0);
-      for (let y = 1; y < h - 1; y++)
-        for (let x = 1; x < w - 1; x++) {
-          const k = y * w + x;
-          gx[k] = (data[k + 1] - data[k - 1]) / 2;
-          gy[k] = (data[k + w] - data[k - w]) / 2;
+          for (let k = -2; k <= 2; k++)
+            sum += tmp[Math.max(0, Math.min(ph - 1, 2 * y + k)) * w + x] * [1, 4, 6, 4, 1][k + 2];
+          nd[y * w + x] = sum / 256;
         }
     }
     return this;
@@ -160,7 +149,7 @@ function detectCorners(level, rect) {
   const candidates = [],
     r = 2,
     w = level.width,
-    { gx, gy } = level;
+    d = level.data;
   const x0 = Math.max(r + 1, Math.ceil(rect[0])),
     y0 = Math.max(r + 1, Math.ceil(rect[1])),
     x1 = Math.min(w - r - 2, Math.floor(rect[2])),
@@ -173,9 +162,11 @@ function detectCorners(level, rect) {
       for (let j = -r; j <= r; j++) {
         let k = (y + j) * w + x - r;
         for (let i = -r; i <= r; i++, k++) {
-          a += gx[k] * gx[k];
-          b += gx[k] * gy[k];
-          c += gy[k] * gy[k];
+          const gx = (d[k + 1] - d[k - 1]) / 2,
+            gy = (d[k + w] - d[k - w]) / 2;
+          a += gx * gx;
+          b += gx * gy;
+          c += gy * gy;
         }
       }
       const score = (a + c - Math.hypot(a - c, 2 * b)) / 50;
@@ -238,8 +229,8 @@ function flow(source, destination, origin, estimate) {
     for (let j = -radius, i = 0; j <= radius; j++)
       for (let k = -radius; k <= radius; k++, i++) {
         T[i] = sample(src, px + k, py + j);
-        GX[i] = sampleArray(src, src.gx, px + k, py + j);
-        GY[i] = sampleArray(src, src.gy, px + k, py + j);
+        GX[i] = (sample(src, px + k + 1, py + j) - sample(src, px + k - 1, py + j)) / 2;
+        GY[i] = (sample(src, px + k, py + j + 1) - sample(src, px + k, py + j - 1)) / 2;
         mean += T[i];
       }
     mean /= n;
@@ -331,6 +322,11 @@ function solve(matrix, rhs) {
   }
   return a.map((row) => row[n]);
 }
+// Weighted least squares. Features born in the placement frame carry exact plane
+// coordinates; features added later inherit whatever bias the fit had when they were
+// back-projected, so the originals are weighted higher while they remain in view to
+// keep the map from slowly drifting toward its own errors.
+const weightOf = (match) => (match.feature && match.feature.born === 0 ? 3 : 1);
 function fit(matches, scale) {
   const matrix = Array.from({ length: 8 }, () => Array(8).fill(0)),
     rhs = Array(8).fill(0);
@@ -338,15 +334,16 @@ function fit(matches, scale) {
     const x = match.reference[0] / scale,
       y = match.reference[1] / scale,
       u = match.current[0] / scale,
-      v = match.current[1] / scale;
+      v = match.current[1] / scale,
+      w = weightOf(match);
     const rows = [
       [x, y, 1, 0, 0, 0, -u * x, -u * y],
       [0, 0, 0, x, y, 1, -v * x, -v * y],
     ];
     for (let k = 0; k < 2; k++)
       for (let i = 0; i < 8; i++) {
-        rhs[i] += rows[k][i] * (k === 0 ? u : v);
-        for (let j = 0; j < 8; j++) matrix[i][j] += rows[k][i] * rows[k][j];
+        rhs[i] += w * rows[k][i] * (k === 0 ? u : v);
+        for (let j = 0; j < 8; j++) matrix[i][j] += w * rows[k][i] * rows[k][j];
       }
   }
   const h = solve(matrix, rhs);
@@ -356,12 +353,12 @@ const error = (h, match) => {
   const q = project(h, match.reference);
   return Math.hypot(q[0] - match.current[0], q[1] - match.current[1]);
 };
-function ransac(matches, scale) {
+function ransac(matches, scale, minFraction = 0.5, trials = 128) {
   if (matches.length < 10) return null;
   let seed = 48271,
     best = [],
     bestError = Infinity;
-  for (let trial = 0; trial < 128; trial++) {
+  for (let trial = 0; trial < trials; trial++) {
     const indices = new Set();
     while (indices.size < 4) {
       seed = (seed * 16807) % 2147483647;
@@ -379,9 +376,41 @@ function ransac(matches, scale) {
       bestError = e;
     }
   }
-  if (best.length < 10 || best.length / matches.length < 0.5) return null;
-  const h = fit(best, scale);
-  return h && { h, matches: best.filter((m) => error(h, m) < 1.8) };
+  if (best.length < 10 || best.length / matches.length < minFraction) return null;
+  return robustRefit(best, scale);
+}
+// Least squares on the consensus set, then a tighter pass when enough points remain.
+// Features straddling an object edge match with a fraction of the object's motion and
+// slip under a loose threshold; left in, they bend the fit a little every frame and the
+// anchor drifts. The tight pass drops them while keeping ordinary tracking noise.
+function robustRefit(inliers, scale) {
+  const h = fit(inliers, scale);
+  if (!h) return null;
+  let kept = inliers.filter((m) => error(h, m) < 1.8);
+  if (kept.length < 10) return null;
+  if (kept.length >= 20) {
+    const h2 = fit(kept, scale),
+      tight = h2 ? kept.filter((m) => error(h2, m) < 1) : [];
+    if (h2 && tight.length >= 15) {
+      const h3 = fit(tight, scale);
+      if (h3) return { h: h3, matches: tight.filter((m) => error(h3, m) < 1.2) };
+    }
+  }
+  const h2 = fit(kept, scale);
+  return h2 && { h: h2, matches: kept.filter((m) => error(h2, m) < 1.8) };
+}
+// The predicted homography (gyro rotation on the last accepted fit) is itself a strong
+// hypothesis: when most tracked features sit off the plane (walls, objects), random
+// 4-point samples rarely land on the plane, but the prediction's inlier set does.
+function seedConsensus(matches, seed, scale) {
+  if (matches.length < 10) return null;
+  const inliers = matches.filter((m) => error(seed, m) < 4);
+  if (inliers.length < 10 || inliers.length < matches.length * 0.3) return null;
+  const h = fit(inliers, scale);
+  if (!h) return null;
+  const refined = matches.filter((m) => error(h, m) < 1.8);
+  if (refined.length < 10 || refined.length < matches.length * 0.3) return null;
+  return robustRefit(refined, scale);
 }
 export class FeaturePlane {
   constructor(width, height) {
@@ -581,7 +610,7 @@ export class FeaturePlane {
     }
     return selected;
   }
-  attempt(source, sourceH, current, seed) {
+  attempt(source, sourceH, current, seed, predicted = false) {
     const matches = [],
       scale = Math.max(this.width, this.height);
     for (const feature of this.trackingSubset(seed)) {
@@ -599,7 +628,15 @@ export class FeaturePlane {
       if (!back || Math.hypot(back[0] - origin[0], back[1] - origin[1]) > 1.2) continue;
       matches.push({ reference: feature.p, current: q, feature });
     }
-    let fitResult = ransac(matches, scale);
+    // With a motion prediction, the plane is the set that agrees with it; a large
+    // off-plane object could otherwise outvote the floor in a random-sample consensus.
+    let fitResult = predicted
+      ? (seedConsensus(matches, seed, scale) ??
+        ransac(matches, scale) ??
+        ransac(matches, scale, 0.35, 192))
+      : (ransac(matches, scale) ??
+        seedConsensus(matches, seed, scale) ??
+        ransac(matches, scale, 0.35, 192));
     if (!fitResult) return null;
     const verified = fitResult.matches.filter(
       (m) => this.correlation(m.feature, fitResult.h, current) > 0.7,
@@ -710,6 +747,8 @@ export class FeaturePlane {
       fitResult.matches.reduce((s, m) => s + error(this.homography, m) ** 2, 0) /
         fitResult.matches.length,
     );
+    // Grow the map only under a reasonably clean fit; a biased homography stamps its
+    // bias into every new plane coordinate. (0.8 px starved growth on real textures.)
     if (rms > 1.2) return;
     const positions = this.visible(this.homography, -16).map((f) => project(this.homography, f.p)),
       counts = new Map(),
@@ -745,7 +784,7 @@ export class FeaturePlane {
         const [x, y] = candidate.point;
         if (positions.some((p) => Math.hypot(x - p[0], y - p[1]) < 12)) continue;
         const feature = this.createFeature(current, this.homography, [x, y]);
-        if (!feature) continue;
+        if (!feature || (this.planeFilter && !this.planeFilter(feature.p))) continue;
         this.features.push(feature);
         positions.push([x, y]);
         taken++;
@@ -769,6 +808,12 @@ export class FeaturePlane {
     if (!candidates.length) return;
     const drop = new Set(candidates);
     this.features = this.features.filter((f) => !drop.has(f));
+  }
+  // Geometric plane filter from the session (gravity horizon and depth bound): drop map
+  // points that cannot lie on the placement plane and refuse such candidates later.
+  setPlaneFilter(filter) {
+    this.planeFilter = filter;
+    if (filter) this.features = this.features.filter((f) => filter(f.p));
   }
   prune(fitResult) {
     const inliers = new Set(fitResult.matches.map((m) => m.feature));
@@ -796,17 +841,19 @@ export class FeaturePlane {
       current = this.acquire().build(luma),
       t1 = performance.now();
     this.frame++;
-    const seed = compose(delta, this.homography);
-    let fitResult = this.attempt(this.previous, this.homography, current, seed);
+    const seed = compose(delta, this.homography),
+      predicted = delta !== IDENTITY;
+    let fitResult = this.attempt(this.previous, this.homography, current, seed, predicted);
     if (!fitResult && this.previous !== this.reference)
-      fitResult = this.attempt(this.reference, IDENTITY, current, seed);
+      fitResult = this.attempt(this.reference, IDENTITY, current, seed, predicted);
     const t2 = performance.now();
-    // Coarse recovery on alternate lost frames only, so a long loss keeps the rate up.
-    if (!fitResult && this.failures >= 2 && this.failures % 2 === 1) {
+    // Coarse recovery is bounded (16 features, 9x9x3 grid), so it can run on every lost
+    // frame after the first two without starving the frame rate.
+    if (!fitResult && this.failures >= 2) {
       for (const candidate of this.recoverySeeds(current, seed)) {
         fitResult =
-          this.attempt(this.reference, IDENTITY, current, candidate) ??
-          this.attempt(this.previous, this.homography, current, candidate);
+          this.attempt(this.reference, IDENTITY, current, candidate, true) ??
+          this.attempt(this.previous, this.homography, current, candidate, true);
         if (fitResult) break;
       }
     }

@@ -171,3 +171,14 @@ online (`metrics.gyro.mapping`, `bestRatio`), bridges with a frozen pose while u
 requires a swept, tracked surface before the first tap, keeps the map on reposition and reports
 `metrics.phaseMs` and `metrics.tapsBeforeReady`. Expected next-run signals: `gyro.prediction`
 `active` with a named mapping, fewer/shorter `lossIntervals`, and a green marker before placing.
+
+## Third device diagnostic — 2026-09-07
+
+`SP-B41E8F71` on `3c9d73a` validated the gyro online (mapping `-a,+b,+g`, 30 ms offset) and cut
+frame drops to 18%, but the model was measured only ~45% of the time with 34 losses (12 rejected as
+non-rigid); see the [evidence note](evidence/2026-09-07-third-device-diagnostic.md). The lab now
+filters map points by the gravity plane (below the horizon, ≤3× placement depth), uses the gyro
+prediction as the consensus hypothesis with a 35% floor, refits tightly, weights original features,
+drops whole-level gradient arrays (pyramid cost) and bridges 2.5 s with a validated gyro. Expected
+next-run signals: fewer `non-rigid-or-ambiguous-pose` losses, a higher `stateFrames.tracking` share,
+lower `phaseMs.pyramidMs`.

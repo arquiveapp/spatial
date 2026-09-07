@@ -336,7 +336,7 @@ export class TrackingSession {
     this.prediction = "untested";
     this.calibrationFrames = 0;
     this.bestRatio = null;
-    this.bridgeMs = 1500;
+    this.bridgeMs = 2500;
     this.frozenBridgeMs = 700;
     this.lastMotionSpeed = 0;
     this.bridged = null;
@@ -451,6 +451,23 @@ export class TrackingSession {
     this.recovering = false;
     this.bridged = null;
     this.bridgedAt = null;
+  }
+  // Only reference pixels whose ray meets the gravity plane in front of the camera and
+  // no farther than three times the placement depth can be map points. This excludes
+  // walls, objects near the horizon and anything above it.
+  installPlaneFilter(center) {
+    const n = this.normal,
+      camera = this.camera,
+      ray = (q) => [(q[0] - camera.cx) / camera.focal, (q[1] - camera.cy) / camera.focal, 1],
+      incidence = (q) => {
+        const r = ray(q);
+        return r[0] * n[0] + r[1] * n[1] + r[2] * n[2];
+      },
+      reference = incidence(center);
+    this.features.setPlaneFilter((q) => {
+      const i = incidence(q);
+      return i > 1e-3 && reference / i <= 3;
+    });
   }
   dropProvisional() {
     this.features = new FeaturePlane(this.width, this.height);
@@ -703,6 +720,7 @@ export class TrackingSession {
         if (visual.state !== "tracking")
           return { state: "unplaced", reason: visual.reason, features: visual.features ?? 0 };
         this.anchorMatrix = anchor;
+        this.installPlaneFilter(this.center);
         this.lastPose = null;
         this.lastAccepted = null;
         this.candidate = null;
@@ -723,6 +741,7 @@ export class TrackingSession {
         const start = this.features.place(luma, this.width * 0.5, this.height * 0.58);
         if (start.state !== "tracking") return this.scanResult(sent, age, start.reason, start);
         this.normal = plane.normal;
+        this.installPlaneFilter([this.width * 0.5, this.height * 0.58]);
         this.provisionalAt = sent;
         this.readyFrames = 0;
         this.scanLost = 0;
