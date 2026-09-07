@@ -5,12 +5,15 @@ import {
   ResourceScope,
   captureSize,
   trackedPoseValid,
+  displayedPoseValid,
   normalizedTap,
   startVideoPlayback,
   waitUntilAbortedOrSettled,
 } from "./tabletop-runtime.mjs";
 import { containedRect } from "./video-rect.mjs";
 import { stats } from "./metrics.mjs";
+import { integrate, identity } from "./patch.mjs";
+import { cameraMatrices, intrinsics, multiply3 } from "./tracking-math.mjs";
 
 function disposeModel(object) {
   const resources = new Set(),
@@ -55,6 +58,8 @@ export async function startTabletop({
     scaleMode: "assumed",
     calibration: "estimated-fov-65deg-long-edge",
     assumedPlaneDistanceMeters: 0.65,
+    lossIntervals: [],
+    jitterSamples: [],
     model: { id: model.id, name: model.name, sha256: model.sha256 },
     notes: [],
     errors: [],
@@ -85,7 +90,32 @@ export async function startTabletop({
     ended = false;
   const engineTimes = [],
     roundTrips = [],
+    poseAges = [],
     samples = [];
+  let lossStart = null,
+    lossReason = "",
+    previousMeasured = false,
+    lastGyro = null,
+    lastPoseSent = 0;
+  const jitterWindow = [],
+    gyroBuffer = [];
+  let extrapolation = { frames: 0, applied: 0 },
+    displayedPose = null,
+    processingCamera = null;
+  const traceEntry = (t) => ({
+    state: t.state,
+    reason: t.reason,
+    inliers: t.inliers,
+    features: t.features,
+    visibleFeatures: t.visibleFeatures,
+    screen: t.screen ? t.screen.map((v) => Math.round(v * 10) / 10) : null,
+    motionDegPerS:
+      t.gyro?.motionDegPerS != null ? Math.round(t.gyro.motionDegPerS * 10) / 10 : null,
+    prediction: t.gyro?.prediction,
+    bridgedMs: t.bridgedMs,
+    recoveryJumpPx: t.recoveryJumpPx,
+    poseReprojectionError: t.poseReprojectionError,
+  });
   const snapshot = () => ({
     kind: report.kind,
     synthetic: report.synthetic,
@@ -107,8 +137,15 @@ export async function startTabletop({
       scale,
       rotationRadians: rotation,
       calibration: report.calibration,
-      renderSmoothingSeconds: 0.045,
+      renderSmoothingSeconds: 0.025,
+      renderExtrapolation: { ...extrapolation },
       heldPoseMaxMs: 120,
+      bridgeMaxMs: 1500,
+      processingResolution: report.capture?.luma ?? null,
+      gyro: lastGyro,
+      lossIntervals: report.lossIntervals.map((l) => ({ ...l })),
+      stationaryJitterPx: stats(report.jitterSamples),
+      poseAgeAtRenderMs: stats(poseAges),
       assumedPlaneDistanceMeters: report.assumedPlaneDistanceMeters,
       frames: report.frames,
       droppedFrames: report.droppedFrames,
@@ -280,6 +317,47 @@ export async function startTabletop({
       unitScale = new THREE.Vector3(1, 1, 1);
     let lastPoseUpdate = 0;
     camera.matrixAutoUpdate = false;
+    // Camera update from a measured/bridged pose, optionally rotated by the gyro
+    // motion since that frame's delivery time (rotation only, bounded to 250 ms).
+    const applyPose = (pose, fresh) => {
+      const now = performance.now();
+      let view = pose.viewMatrix;
+      if (pose.extrapolate && processingCamera) {
+        const from = pose.sent - pose.latencyMs,
+          to = Math.min(now - pose.latencyMs, from + 250);
+        let R = identity(),
+          used = 0;
+        for (const g of gyroBuffer)
+          if (g.time > from && g.time <= to) {
+            R = integrate(R, g.rate, g.dt);
+            used++;
+          }
+        if (used) {
+          const t = pose.translation,
+            rotated = [0, 1, 2].map(
+              (r) => R[r * 3] * t[0] + R[r * 3 + 1] * t[1] + R[r * 3 + 2] * t[2],
+            );
+          view = cameraMatrices(
+            multiply3(R, pose.rotation),
+            rotated,
+            processingCamera,
+            0.65,
+          ).viewMatrix;
+          if (fresh) extrapolation.applied++;
+        }
+        if (fresh) extrapolation.frames++;
+      }
+      targetCamera.fromArray(view).invert();
+      targetCamera.decompose(targetPosition, targetRotation, unitScale);
+      const alpha =
+        !root.visible || !lastPoseUpdate ? 1 : 1 - Math.exp(-(now - lastPoseUpdate) / 25);
+      smoothPosition.lerp(targetPosition, alpha);
+      smoothRotation.slerp(targetRotation, alpha);
+      camera.matrixWorld.compose(smoothPosition, smoothRotation, unitScale);
+      camera.matrix.copy(camera.matrixWorld);
+      camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
+      lastPoseUpdate = now;
+    };
     root = new THREE.Group();
     root.matrixAutoUpdate = false;
     root.visible = false;
@@ -309,6 +387,13 @@ export async function startTabletop({
     renderer.domElement.setAttribute("aria-label", "Apartamento ancorado na região da mesa");
     renderer.domElement.style.cssText = "position:absolute;pointer-events:none";
     stage.appendChild(renderer.domElement);
+    const debug = document.createElement("div");
+    debug.className = "tabletop-debug";
+    debug.setAttribute("aria-label", "Diagnóstico ao vivo do rastreamento");
+    debug.style.cssText =
+      "position:absolute;left:0;right:0;bottom:0;padding:4px 8px;font:11px ui-monospace,monospace;color:#e6efe8;background:rgba(0,0,0,.45);pointer-events:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis";
+    stage.appendChild(debug);
+    let lastDebug = 0;
     const reticle = document.createElement("div");
     reticle.className = "tabletop-reticle";
     reticle.textContent = "+";
@@ -430,9 +515,22 @@ export async function startTabletop({
       const rate = event.rotationRate,
         gravity = event.accelerationIncludingGravity;
       const valid = rate && [rate.alpha, rate.beta, rate.gamma].every(Number.isFinite);
-      if (samples.length < 64)
+      if (valid) {
+        gyroBuffer.push({
+          time: performance.now(),
+          rate: { alpha: rate.alpha, beta: rate.beta, gamma: rate.gamma },
+          dt:
+            Number.isFinite(event.interval) && event.interval > 0 && event.interval <= 100
+              ? event.interval / 1000
+              : 0.016,
+        });
+        while (gyroBuffer.length > 200) gyroBuffer.shift();
+      }
+      if (samples.length < 256)
         samples.push({
           time: performance.now(),
+          eventTime: event.timeStamp,
+          interval: event.interval,
           rate: valid ? { alpha: rate.alpha, beta: rate.beta, gamma: rate.gamma } : null,
           gravity: gravity ? { x: gravity.x, y: gravity.y, z: gravity.z } : null,
         });
@@ -467,30 +565,80 @@ export async function startTabletop({
         previousTrace.state !== tracking.state ||
         previousTrace.reason !== tracking.reason
       ) {
-        report.trace.push({ time: traceTime, ...tracking });
+        report.trace.push({ time: traceTime, ...traceEntry(tracking) });
         if (report.trace.length > 300) report.trace.shift();
       }
-      if (trackedPoseValid(tracking)) {
+      if (tracking.gyro) lastGyro = tracking.gyro;
+      const measured = trackedPoseValid(tracking);
+      // Loss bookkeeping: any frame without a measured pose opens an interval; the
+      // first measured pose closes it with duration, reason and visible jump.
+      if (!measured && lossStart === null && previousMeasured) {
+        lossStart = traceTime;
+        lossReason = tracking.reason ?? "";
+      } else if (measured && lossStart !== null) {
+        if (report.lossIntervals.length < 40)
+          report.lossIntervals.push({
+            startMs: Math.round(lossStart),
+            durationMs: Math.round(traceTime - lossStart),
+            reason: lossReason,
+            recoveryJumpPx: tracking.recoveryJumpPx ?? null,
+          });
+        lossStart = null;
+      }
+      previousMeasured = measured;
+      // Stationary jitter: spread of the anchor's image position over one second
+      // while the gyro reports almost no rotation. Processing-resolution pixels.
+      if (measured && tracking.screen && tracking.gyro?.motionDegPerS < 3) {
+        jitterWindow.push({ time: traceTime, screen: tracking.screen });
+        while (jitterWindow.length && jitterWindow[0].time < traceTime - 1000) jitterWindow.shift();
+        if (jitterWindow.length >= 15 && report.jitterSamples.length < 600) {
+          const mean = [0, 1].map(
+            (i) => jitterWindow.reduce((s, j) => s + j.screen[i], 0) / jitterWindow.length,
+          );
+          report.jitterSamples.push(
+            Math.sqrt(
+              jitterWindow.reduce(
+                (s, j) => s + (j.screen[0] - mean[0]) ** 2 + (j.screen[1] - mean[1]) ** 2,
+                0,
+              ) / jitterWindow.length,
+            ),
+          );
+        }
+      } else if (!measured) jitterWindow.length = 0;
+      if (displayedPoseValid(tracking)) {
         root.matrix.fromArray(tracking.anchorMatrix);
-        targetCamera.fromArray(tracking.viewMatrix).invert();
-        targetCamera.decompose(targetPosition, targetRotation, unitScale);
-        const now = performance.now(),
-          alpha = !root.visible || !lastPoseUpdate ? 1 : 1 - Math.exp(-(now - lastPoseUpdate) / 45);
-        smoothPosition.lerp(targetPosition, alpha);
-        smoothRotation.slerp(targetRotation, alpha);
-        camera.matrixWorld.compose(smoothPosition, smoothRotation, unitScale);
-        camera.matrix.copy(camera.matrixWorld);
-        camera.matrixWorldInverse.copy(camera.matrixWorld).invert();
-        lastPoseUpdate = now;
+        processingCamera ??= intrinsics(tracking.width, tracking.height);
+        // Keep the measured pose and its frame time; the render loop extrapolates
+        // rotation with the gyro up to the display time when prediction is validated.
+        displayedPose = {
+          sent: data.sent,
+          viewMatrix: tracking.viewMatrix,
+          rotation: tracking.rotation ?? null,
+          translation: tracking.translationOverDistance ?? null,
+          extrapolate:
+            tracking.gyro?.prediction === "active" &&
+            Array.isArray(tracking.rotation) &&
+            Array.isArray(tracking.translationOverDistance),
+          latencyMs: tracking.gyro?.latencyMs ?? 30,
+        };
+        applyPose(displayedPose, true);
         camera.projectionMatrix.fromArray(tracking.projectionMatrix);
         camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
         root.visible = true;
         reticle.hidden = true;
         lastTracking = performance.now();
-        status(
-          "tracking",
-          "Apartamento na mesa. Mova devagar e mantenha a região escolhida visível.",
-        );
+        lastPoseSent = data.sent;
+        // A bridged pose is shown dimmed: the gyro predicts rotation while the
+        // surface is hidden or unconfirmed; it is never a new measurement.
+        renderer.domElement.style.opacity = measured ? "1" : "0.55";
+        if (measured)
+          status("tracking", "Apartamento na mesa. Mova devagar e mantenha a superfície visível.");
+        else
+          status(
+            "bridging",
+            "Perdi a superfície por um instante; seguindo o giroscópio. Volte a apontar para a mesa.",
+            tracking.reason,
+          );
       } else {
         // A bounded display hold bridges one rejected frame; it is never a measured pose.
         root.visible = root.visible && performance.now() - lastTracking <= 120;
@@ -602,9 +750,30 @@ export async function startTabletop({
         reticle.hidden = false;
         status("recovering", "Recuperando a mesma região. Mantenha a mesa visível.", "stale-pose");
       }
+      if (root.visible && displayedPose?.extrapolate) applyPose(displayedPose, false);
       adjustments.scale.setScalar(scale);
       adjustments.rotation.y = rotation;
+      if (root.visible && lastPoseSent && poseAges.length < 18000)
+        poseAges.push(performance.now() - lastPoseSent);
       renderer.render(scene, camera);
+      if (performance.now() - lastDebug > 250) {
+        lastDebug = performance.now();
+        const t = report.tracking,
+          g = t.gyro;
+        debug.textContent = [
+          t.state ?? "—",
+          t.reason && t.state !== "tracking" ? t.reason : null,
+          t.inliers != null
+            ? `${t.inliers}/${t.visibleFeatures ?? "?"} pts · mapa ${t.features ?? 0}`
+            : null,
+          g
+            ? `giro ${g.prediction}${g.residualRatio != null ? ` ${Math.round(g.residualRatio * 100)}%` : ""} · ${Math.round(g.motionDegPerS ?? 0)}°/s`
+            : null,
+          roundTrips.length ? `${Math.round(roundTrips.at(-1))} ms` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+      }
     });
     // rVFC can cease entirely when a camera stalls; do not keep showing a frozen placement.
     const watchdog = setInterval(() => {

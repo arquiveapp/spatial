@@ -66,9 +66,13 @@ config and restart after intentionally changing assets. No private fixture path 
    access. Point at a textured, matte horizontal table in good light, hold still and tap a visible
    detail. The loaded apartment is rendered with the patch's view/projection/anchor matrices.
    This is an experimental in-tab camera/sensor tracker, not a native-app/Quick Look handoff.
-3. Keep the selected patch in view and move slowly. Use **Reposicionar**, size and rotation
-   controls. A lost or stale pose hides the model; tap to place again. Scale uses an assumed
-   0.65 m plane distance and estimated 65-degree long-edge FOV, not calibrated intrinsics.
+3. Keep some part of the same surface in view and move slowly; the map grows over the plane, so
+   the tapped spot itself may leave the view. Use **Reposicionar**, size and rotation controls.
+   A dimmed apartment means the surface was lost for a moment and the gyroscope is predicting
+   rotation; it hides after 1.5 s without a visual pose and returns when the surface is seen
+   again. Scale uses an assumed 0.65 m plane distance and estimated 65-degree long-edge FOV, not
+   calibrated intrinsics; at 3× the model can fill the whole camera view. The line at the bottom of
+   the camera shows state, inliers/visible points, map size, gyro prediction status and round trip.
    Stop with **Encerrar mesa**. Backgrounding, stream interruption and orientation change stop
    resources and require a fresh start. A short trial is not the five/ten-minute acceptance gate.
 4. **Abrir apartamento** remains a separate non-AR 3D viewer. The WebXR button requires immersive
@@ -137,3 +141,22 @@ environment remains unverified. The existing Chrome browser completed the final 
 and receipt `SP-DF85D1DD` was confirmed on disk with clean source/server commit `fefe62b`.
 The local check passes 36 tests, strict build/types, rights and real-package consumer checks.
 The 20-cycle resource test uses controlled resources; physical camera/GPU leak proof is pending.
+
+## Plane-map tracker retest — 2026-09-07
+
+The second recording (see [review](evidence/2026-09-07-tabletop-recording-2-review.md)) led to the
+plane-map tracker. Reports now include `metrics.lossIntervals` (start, duration, reason, visible
+recovery jump in processing pixels), `metrics.stationaryJitterPx` (spread of the anchor position
+over one second while the gyro reports under 3°/s; 360-wide processing pixels, multiply by 3 for a
+1080p-equivalent), `metrics.poseAgeAtRenderMs`, `metrics.gyro` (prediction status, chosen delivery
+offset, residual ratio per offset) and `metrics.renderExtrapolation`. Desktop synthetic replay
+`SP-6ABF7427` exercised the new path in Chromium with timer shims in a hidden tab; it is not a device
+test and its timing is throttled.
+
+Physical retest procedure (same tunnel link, reload first, size 1× then 3×): place on a textured
+matte surface while still; hold still ten seconds; pan slowly left and right so the tapped spot
+leaves the view and returns; approach and retreat; cover the camera with a hand for two seconds
+and uncover it at the same view; cover again while turning slowly; then send the result. The
+expected outcomes, in order: placement within a few seconds or a clear coaching message; no
+drift or blinking while still; the apartment stays on its spot while the tapped region is out of
+view; a dimmed apartment during the occlusion and the same place afterwards; and a visible receipt.

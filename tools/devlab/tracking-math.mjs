@@ -205,3 +205,43 @@ export function homographyPose(Hpixel, normal, camera, matches) {
   }
   return null;
 }
+
+// Pure camera rotation R (scene rotation in the camera frame, x_now = R x_before)
+// moves image points by the homography K R K^-1. Used only to seed optical flow
+// and to bridge short visual gaps; visual consensus still decides every pose.
+export function rotationHomography(camera, rotation) {
+  const f = camera.focal,
+    { cx, cy } = camera;
+  const K = [f, 0, cx, 0, f, cy, 0, 0, 1],
+    Kinv = [1 / f, 0, -cx / f, 0, 1 / f, -cy / f, 0, 0, 1];
+  const h = multiply3(multiply3(K, rotation), Kinv);
+  return h.map((v) => v / h[8]);
+}
+export function multiply3(a, b) {
+  return Array.from(
+    { length: 9 },
+    (_, i) =>
+      a[Math.floor(i / 3) * 3] * b[i % 3] +
+      a[Math.floor(i / 3) * 3 + 1] * b[3 + (i % 3)] +
+      a[Math.floor(i / 3) * 3 + 2] * b[6 + (i % 3)],
+  );
+}
+export const transpose3 = (m) => [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]];
+// Angle of the relative rotation A B^T; trace(A B^T) is the elementwise sum.
+export function relativeAngle(a, b) {
+  const trace = a.reduce((sum, v, i) => sum + v * b[i], 0);
+  return Math.acos(Math.max(-1, Math.min(1, (trace - 1) / 2)));
+}
+// Image position of the plane anchor (reference pixel `center`) under a pose
+// x_cur = R x_ref + (t/d) d, using the same assumed intrinsics and normal.
+export function anchorScreen(center, normal, camera, pose) {
+  const ray = [(center[0] - camera.cx) / camera.focal, (center[1] - camera.cy) / camera.focal, 1],
+    incidence = ray.reduce((s, v, i) => s + v * normal[i], 0);
+  if (!(incidence > 1e-6)) return null;
+  const x = ray.map((v) => v / incidence),
+    R = pose.rotation,
+    t = pose.translationOverDistance,
+    q = [0, 1, 2].map((r) => R[r * 3] * x[0] + R[r * 3 + 1] * x[1] + R[r * 3 + 2] * x[2] + t[r]);
+  if (!(q[2] > 1e-6)) return null;
+  return [(camera.focal * q[0]) / q[2] + camera.cx, (camera.focal * q[1]) / q[2] + camera.cy];
+}

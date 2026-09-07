@@ -2,7 +2,8 @@
 
 Framework-neutral browser AR research library. **M0 foundations and M1 lab experiments are
 implemented; production AR sessions, renderer adapters and device support are not.** No npm
-release exists. Every package remains private and every device row remains unqualified. A preliminary phone report is documented; no support claim follows.
+release exists. Every package remains private and every device row remains unqualified. A
+preliminary phone report and two failed tabletop recordings are documented; no support claim follows.
 
 ## Current API
 
@@ -43,8 +44,9 @@ browser-free ESM imports are tested. `npm run sbom` emits the installed npm Cycl
 WASM tests are a separate explicit local gate; npm pack does not invoke Docker or publish.
 
 The lab provides a local GLB viewer (explicitly non-AR), optional WebXR model placement, an
-Android WebXR cube, camera/Worker/SIMD measurements and a throwaway gyro +
-planar patch diagnostic. Read [the lab procedure](docs/validation.md) before using its results.
+Android WebXR cube, camera/Worker/SIMD measurements and an experimental in-page tabletop flow
+(planar feature map, gyro-predicted flow, assumed scale). Read [the lab procedure](docs/validation.md)
+and [tracking research](docs/tabletop-tracking-research.md) before using its results.
 The current capture experiment uses the ImageBitmap/canvas path; preferred TrackProcessor paths
 remain pending. Synthetic tests do not validate iOS capture, gyro axes, tracking or thermal use.
 

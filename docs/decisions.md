@@ -74,3 +74,20 @@ cannot poison prediction. The original direct-patch primitive remains for regres
 but the integrated Worker session uses the feature tracker. This adds no dependency or public
 API. See [research and evidence](tabletop-tracking-research.md), including the final video segment
 that still does not recover. No physical gate is promoted.
+
+## Plane-map tracking repair — 2026-09-07
+
+The user's second recording showed the apartment repeatedly disappearing while the phone looked
+around a floor at the 3× size setting. Source inspection and an independent numerical review
+confirmed the causes: the fixed feature set could not survive the tapped region leaving the view,
+optical flow had no motion prediction, one dropped frame triggered confirm-and-roll-back that
+could not reacquire at moderate rotation speeds, and every gap blinked the model. Conventions and
+pose extraction were verified correct. The user authorized autonomous repair in the testing area.
+
+The lab tracker is now an extendable planar map with gyro-predicted optical flow, online
+gyro/visual consistency checks, bounded gyro bridging shown dimmed, render-time rotation
+extrapolation when prediction is validated, and richer diagnostics (loss intervals, recovery
+jumps, stationary jitter, pose age, gyro residuals). WebXR `immersive-ar` remains unavailable on
+iPhone Safari per WebKit's Safari 27 beta post, so the first-party in-page tracker stays the only
+eligible iOS path without proprietary services. No dependency, public API, publication or support
+promotion is added. See [research and evidence](tabletop-tracking-research.md).

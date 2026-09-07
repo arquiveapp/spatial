@@ -116,3 +116,16 @@ export function startVideoPlayback(video, signal, timeoutMs = 15000) {
     }
   });
 }
+
+// A bridged pose is a flagged rotation-only prediction, displayable but never measured.
+export function displayedPoseValid(tracking) {
+  return (
+    (tracking?.state === "tracking" || (tracking?.state === "bridging" && tracking.predicted)) &&
+    ["viewMatrix", "projectionMatrix", "anchorMatrix"].every(
+      (key) =>
+        Array.isArray(tracking[key]) &&
+        tracking[key].length === 16 &&
+        tracking[key].every(Number.isFinite),
+    )
+  );
+}

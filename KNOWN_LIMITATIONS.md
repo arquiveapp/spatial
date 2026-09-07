@@ -2,20 +2,23 @@
 
 - No production session, model loader, fallback viewer, renderer adapter or tracking backend
   exists yet. Workspace imports other than core/root intentionally expose no runtime API.
-- Preliminary iPhone 16 feedback and a failed tabletop screen recording exist; no physical acceptance gates or support claims. Generic OS/browser versions from the
-  research brief have not been adopted as compatibility promises.
+- Preliminary iPhone 16 feedback and two failed tabletop screen recordings exist; no physical
+  acceptance gates or support claims. The plane-map tracker still needs its first phone run.
+  Generic OS/browser versions from the research brief have not been adopted as compatibility promises.
 - The capture spike currently measures ImageBitmap → Worker canvas → luma WASM, or an explicitly
   reported slower main-thread canvas path. TrackProcessor and direct VideoFrame paths are pending;
   canvas output is RGBA and does not reveal the camera's native pixel format.
 - The single-threaded kernels perform luma/checksum diagnostics only. They are not a VIO engine.
   No SharedArrayBuffer or cross-origin isolation is required.
-- The lab now uses original distributed planar feature tracking, robust homography fitting and
-  visual rigid pose with local recovery of the same reference. It remains an unshipped experiment
-  with assumed 65° long-edge field of view, initial gravity direction and relative translation.
-  Camera/IMU calibration, metric scale, plane expansion and general relocalization are absent.
-  Fast motion, lighting changes, rolling shutter and leaving the reference can invalidate the
-  fit. Low reprojection error is not physical accuracy. The user's video replay still loses its
-  final segment; see [recording review](docs/evidence/2026-09-07-tabletop-video-review.md).
+- The lab now tracks an extendable planar feature map with gyro-predicted optical flow, visual
+  rigid pose and bounded gyro bridging of short visual gaps. It remains an unshipped experiment
+  with assumed 65° long-edge field of view, averaged initial gravity direction and relative
+  translation. Camera/IMU calibration, metric scale, multi-plane scenes and general relocalization
+  are absent; the gyro axis mapping and delivery offset are validated online, not calibrated.
+  Fast motion, leaving the plane entirely, lighting changes and rolling shutter can invalidate the
+  fit. Low reprojection error is not physical accuracy. A bridged pose is a flagged prediction,
+  shown dimmed for at most 1.5 s. See the
+  [recording reviews](docs/evidence/2026-09-07-tabletop-recording-2-review.md).
 - Blank/glossy/glass surfaces and moving objects are unvalidated and likely poor inputs.
 - WebXR requires hit-test and anchors, requests DOM overlay optionally, and refuses a silent
   fixed-pose substitute. Native XR permission and actual plane/anchor behavior need phones.
