@@ -20,7 +20,9 @@
   A gravity-derived plane filter excludes points above the horizon or beyond three placement
   depths. The map has no global optimisation: features created while the original region is
   hidden inherit small fit bias, so a few pixels of drift over tens of frames is possible when a
-  large off-plane object covers much of the view.
+  large off-plane object covers much of the view. The field of view and plane normal are
+  self-calibrated from large-baseline homographies (1-D focal search, bounded normal tilt), not
+  measured; a moderately non-rigid decomposition is followed as a flagged degraded pose.
   Fast motion, leaving the plane entirely, lighting changes and rolling shutter can invalidate the
   fit. Low reprojection error is not physical accuracy. A bridged pose is a flagged prediction,
   shown dimmed for at most 1.5 s. See the

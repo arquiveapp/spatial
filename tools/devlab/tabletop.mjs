@@ -68,6 +68,8 @@ export async function startTabletop({
     droppedFrames: 0,
     placements: 0,
     tapsBeforeReady: 0,
+    degradedFrames: 0,
+    replacedDuringLoss: 0,
     motionSamples: 0,
     stateFrames: {},
     tracking: { state: "starting" },
@@ -97,6 +99,7 @@ export async function startTabletop({
     lossReason = "",
     previousMeasured = false,
     scanReady = false,
+    lastIntrinsics = null,
     phase = { pyramidMs: [], flowMs: [], recoveryMs: [] },
     lastGyro = null,
     lastPoseSent = 0;
@@ -139,7 +142,12 @@ export async function startTabletop({
       durationMs: performance.now() - started,
       scale,
       rotationRadians: rotation,
-      calibration: report.calibration,
+      calibration: lastIntrinsics
+        ? `fov-${lastIntrinsics.fovDeg}deg-${lastIntrinsics.source}`
+        : report.calibration,
+      intrinsics: lastIntrinsics,
+      degradedFrames: report.degradedFrames,
+      replacedDuringLoss: report.replacedDuringLoss,
       renderSmoothing: "adaptive 20-220 ms by gyro speed; deadband when still",
       renderExtrapolation: { ...extrapolation },
       heldPoseMaxMs: 120,
@@ -592,6 +600,8 @@ export async function startTabletop({
         if (report.trace.length > 300) report.trace.shift();
       }
       if (tracking.gyro) lastGyro = tracking.gyro;
+      if (tracking.intrinsics) lastIntrinsics = tracking.intrinsics;
+      if (tracking.state === "tracking" && tracking.degraded) report.degradedFrames++;
       if (tracking.timings && phase.pyramidMs.length < 18000)
         for (const key of Object.keys(phase))
           if (Number.isFinite(tracking.timings[key])) phase[key].push(tracking.timings[key]);
@@ -608,6 +618,7 @@ export async function startTabletop({
             startMs: Math.round(lossStart),
             durationMs: Math.round(traceTime - lossStart),
             reason: lossReason,
+            endedBy: "recovered",
             recoveryJumpPx: tracking.recoveryJumpPx ?? null,
           });
         lossStart = null;
@@ -659,7 +670,14 @@ export async function startTabletop({
         lastPoseSent = data.sent;
         // A bridged pose is shown dimmed: the gyro predicts rotation while the
         // surface is hidden or unconfirmed; it is never a new measurement.
-        renderer.domElement.style.opacity = measured ? "1" : "0.55";
+        // Bridged poses stay at full opacity for 300 ms (one blink would read as a ghost),
+        // then fade toward 0.6 so a longer prediction is visibly provisional.
+        const bridged = tracking.bridgedMs ?? 0;
+        renderer.domElement.style.opacity = measured
+          ? "1"
+          : bridged < 300
+            ? "1"
+            : String(Math.max(0.6, 1 - ((bridged - 300) / 700) * 0.4).toFixed(2));
         if (measured)
           status("tracking", "Apartamento na mesa. Mova devagar e mantenha a superfície visível.");
         else
@@ -739,6 +757,20 @@ export async function startTabletop({
           "sweep-surface",
         );
         return;
+      }
+      // A re-tap during a loss closes that interval as ended by the user, so the report
+      // shows losses the tracker never recovered from by itself.
+      if (lossStart !== null) {
+        report.replacedDuringLoss++;
+        if (report.lossIntervals.length < 40)
+          report.lossIntervals.push({
+            startMs: Math.round(lossStart),
+            durationMs: Math.round(performance.now() - started - lossStart),
+            reason: lossReason,
+            endedBy: "replaced",
+            recoveryJumpPx: null,
+          });
+        lossStart = null;
       }
       root.visible = false;
       reticle.hidden = false;
@@ -842,6 +874,9 @@ export async function startTabletop({
             : null,
           g
             ? `giro ${g.prediction}${g.mapping ? ` ${g.mapping}` : ""}${g.residualRatio != null ? ` ${Math.round(g.residualRatio * 100)}%` : ""} · ${Math.round(g.motionDegPerS ?? 0)}°/s`
+            : null,
+          t.intrinsics
+            ? `fov ${t.intrinsics.fovDeg}${t.intrinsics.source === "estimated" ? "*" : ""}${t.degraded ? " deg" : ""}`
             : null,
           roundTrips.length ? `${Math.round(roundTrips.at(-1))} ms` : null,
         ]

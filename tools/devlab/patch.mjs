@@ -6,6 +6,7 @@
 // motivates the gyro/plane split; this is not their implementation or full algorithm.
 import {
   intrinsics,
+  intrinsicsFor,
   anchorForPlane,
   cameraMatrices,
   homographyPose,
@@ -300,11 +301,24 @@ export class PlanarPatch {
 const LATENCY_CANDIDATES = [0, 30, 60, 90];
 const READY_FRAMES = 20;
 const READY_FEATURES = 50;
+// Self-calibration candidates: long-edge field of view, and small tilts of the gravity
+// normal about its two tangent axes (degrees). Scored by the rigid reprojection error of
+// the accepted homography on frames with a large enough baseline from the reference.
+const FOV_CANDIDATES = Array.from({ length: 15 }, (_, i) => 50 + 2.5 * i);
+const NORMAL_OFFSETS = [];
+for (const dx of [-6, -3, 0, 3, 6])
+  for (const dy of [-6, -3, 0, 3, 6]) NORMAL_OFFSETS.push([dx, dy]);
 export class TrackingSession {
   constructor(width, height) {
     this.width = width;
     this.height = height;
-    this.camera = intrinsics(width, height);
+    this.fovDeg = 65;
+    this.fovSource = "assumed";
+    this.camera = intrinsicsFor(width, height, this.fovDeg);
+    this.calibration = {
+      fov: { errors: FOV_CANDIDATES.map(() => 0), frames: 0, adopted: 0 },
+      normal: { errors: NORMAL_OFFSETS.map(() => 0), frames: 0, adopted: 0, totalDeg: 0 },
+    };
     this.features = new FeaturePlane(width, height);
     this.lastMotion = null;
     this.gravity = null;
@@ -559,6 +573,113 @@ export class TrackingSession {
       this.prediction = "active";
     } else if (best.frames >= 60) this.prediction = "disabled-inconsistent";
   }
+  intrinsicsReport() {
+    const fov = this.calibration.fov,
+      current = FOV_CANDIDATES.indexOf(this.fovDeg);
+    return {
+      fovDeg: this.fovDeg,
+      source: this.fovSource,
+      frames: fov.frames,
+      adopted: fov.adopted,
+      normalAdjustedDeg: Math.round(this.calibration.normal.totalDeg * 10) / 10,
+      normalAdoptions: this.calibration.normal.adopted,
+      meanErrorPx:
+        fov.frames && current >= 0
+          ? Math.round((fov.errors[current] / fov.frames) * 100) / 100
+          : null,
+    };
+  }
+  tiltedNormal(dxDeg, dyDeg) {
+    const n = this.normal,
+      seed = Math.abs(n[0]) < 0.8 ? [1, 0, 0] : [0, 1, 0],
+      dot = seed[0] * n[0] + seed[1] * n[1] + seed[2] * n[2],
+      a0 = seed.map((v, i) => v - dot * n[i]),
+      la = Math.hypot(...a0),
+      a = a0.map((v) => v / la),
+      b = [n[1] * a[2] - n[2] * a[1], n[2] * a[0] - n[0] * a[2], n[0] * a[1] - n[1] * a[0]],
+      tx = Math.tan((dxDeg * Math.PI) / 180),
+      ty = Math.tan((dyDeg * Math.PI) / 180),
+      v = n.map((c, i) => c + tx * a[i] + ty * b[i]),
+      l = Math.hypot(...v);
+    return v.map((c) => c / l);
+  }
+  applyCalibration() {
+    this.camera = intrinsicsFor(this.width, this.height, this.fovDeg);
+    if (this.anchorMatrix && this.center) {
+      const anchor = anchorForPlane(this.center, this.normal, this.camera, this.distance);
+      if (anchor) this.anchorMatrix = anchor;
+    }
+    if (this.normal) this.installPlaneFilter(this.center ?? [this.width * 0.5, this.height * 0.58]);
+  }
+  // Plane-based self-calibration: with the plane normal known up to a small tilt and the
+  // homography measured, each field-of-view candidate implies a rigid pose whose
+  // reprojection error on the inlier matches is a direct score. Frames close to the
+  // reference are uninformative; only large-baseline frames are accumulated. FOV and
+  // normal are refined alternately (coordinate descent), each adopted only when clearly
+  // better, and the anchor is re-derived from the same tapped reference pixel.
+  refineCalibration(visual, pose) {
+    const angle = relativeAngle(pose.rotation, identity()),
+      baseline = Math.hypot(...pose.translationOverDistance);
+    if (angle < 0.07 && baseline < 0.08) return;
+    const fov = this.calibration.fov,
+      normal = this.calibration.normal;
+    for (let i = 0; i < FOV_CANDIDATES.length; i++) {
+      const p = homographyPose(
+        visual.homography,
+        this.normal,
+        intrinsicsFor(this.width, this.height, FOV_CANDIDATES[i]),
+        visual.matches,
+        { lenient: true },
+      );
+      fov.errors[i] += p ? Math.min(25, p.reprojectionError) : 25;
+    }
+    fov.frames++;
+    for (let i = 0; i < NORMAL_OFFSETS.length; i++) {
+      const p = homographyPose(
+        visual.homography,
+        this.tiltedNormal(...NORMAL_OFFSETS[i]),
+        this.camera,
+        visual.matches,
+        { lenient: true },
+      );
+      normal.errors[i] += p ? Math.min(25, p.reprojectionError) : 25;
+    }
+    normal.frames++;
+    if (fov.frames >= 20 && fov.frames % 10 === 0) {
+      const current = FOV_CANDIDATES.indexOf(this.fovDeg);
+      let best = current;
+      for (let i = 0; i < FOV_CANDIDATES.length; i++)
+        if (fov.errors[i] < fov.errors[best]) best = i;
+      if (best !== current && fov.errors[best] < fov.errors[current] * 0.85) {
+        this.fovDeg = FOV_CANDIDATES[best];
+        this.fovSource = "estimated";
+        fov.adopted++;
+        fov.errors.fill(0);
+        fov.frames = 0;
+        normal.errors.fill(0);
+        normal.frames = 0;
+        this.applyCalibration();
+        return;
+      }
+    }
+    if (normal.frames >= 20 && normal.frames % 10 === 0) {
+      const zero = NORMAL_OFFSETS.findIndex(([x, y]) => x === 0 && y === 0);
+      let best = zero;
+      for (let i = 0; i < NORMAL_OFFSETS.length; i++)
+        if (normal.errors[i] < normal.errors[best]) best = i;
+      if (best !== zero && normal.errors[best] < normal.errors[zero] * 0.85) {
+        const [dx, dy] = NORMAL_OFFSETS[best];
+        this.normal = this.tiltedNormal(dx, dy);
+        normal.totalDeg += Math.hypot(dx, dy);
+        normal.adopted++;
+        normal.errors.fill(0);
+        normal.frames = 0;
+        fov.errors.fill(0);
+        fov.frames = 0;
+        this.applyCalibration();
+      }
+    }
+  }
   matrices(pose) {
     return cameraMatrices(pose.rotation, pose.translationOverDistance, this.camera, this.distance);
   }
@@ -576,6 +697,7 @@ export class TrackingSession {
       addedFeatures: visual?.added ?? 0,
       poseReprojectionError: pose?.reprojectionError ?? null,
       gyro: this.gyroReport(),
+      intrinsics: this.intrinsicsReport(),
       timings: visual?.timings ?? null,
       motionAgeMs: age,
       timestampMs: sent,
@@ -589,7 +711,13 @@ export class TrackingSession {
       height: this.height,
       scaleMode: "assumed",
       assumedPlaneDistanceMeters: this.distance,
-      calibration: "estimated-fov-65deg-long-edge",
+      calibration:
+        this.fovSource === "estimated"
+          ? `self-calibrated-fov-${this.fovDeg}deg-long-edge`
+          : "estimated-fov-65deg-long-edge",
+      intrinsics: this.intrinsicsReport(),
+      degraded: pose.degraded === true,
+      poseRigidityError: pose.rigidityError ?? null,
       anchorMatrix: [...this.anchorMatrix],
       ...this.matrices(pose),
       rotation: [...pose.rotation],
@@ -792,9 +920,19 @@ export class TrackingSession {
       );
     };
     if (visual.state !== "tracking") return recover(visual.reason ?? "visual-support-lost", false);
-    const pose = homographyPose(visual.homography, this.normal, this.camera, visual.matches);
+    let pose = homographyPose(visual.homography, this.normal, this.camera, visual.matches);
+    if (!pose) {
+      // The plane is visually tracked; only the rigid interpretation under assumed
+      // intrinsics/normal is imprecise. Keep following the plane (flagged degraded) and
+      // let calibration improve; reject and roll back only gross non-rigidity.
+      pose = homographyPose(visual.homography, this.normal, this.camera, visual.matches, {
+        lenient: true,
+      });
+      if (pose) pose.degraded = true;
+    }
     if (!pose || ![...pose.rotation, ...pose.translationOverDistance].every(Number.isFinite))
       return recover("non-rigid-or-ambiguous-pose", true);
+    this.refineCalibration(visual, pose);
     if (this.lastPose && this.lastAccepted !== null) {
       const dt = Math.max(0, (sent - this.lastAccepted) / 1000),
         usePrediction = this.prediction === "active" && this.gyro.length > 0,

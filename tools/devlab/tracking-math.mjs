@@ -14,14 +14,20 @@ export function processingSize(width, height) {
   );
   return [Math.max(1, Math.floor(width * scale)), Math.max(1, Math.floor(height * scale))];
 }
-export function intrinsics(width, height) {
+// Pinhole intrinsics from a long-edge field of view; 65 degrees is the default assumption
+// and the session may replace it with a self-calibrated value.
+export function intrinsicsFor(width, height, fovDeg) {
   return {
     width,
     height,
-    focal: Math.max(width, height) / (2 * Math.tan((65 * Math.PI) / 360)),
+    fovDeg,
+    focal: Math.max(width, height) / (2 * Math.tan((fovDeg * Math.PI) / 360)),
     cx: width / 2,
     cy: height / 2,
   };
+}
+export function intrinsics(width, height) {
+  return intrinsicsFor(width, height, 65);
 }
 const dot = (a, b) => a.reduce((sum, v, i) => sum + v * b[i], 0);
 const cross = (a, b) => [
@@ -82,7 +88,11 @@ export function cameraMatrices(rotation, translation, camera, distance = 0.65) {
 // determines t/d. This assumes one rigid plane, a fixed initial unit normal,
 // estimated pinhole intrinsics, and a camera remaining on the initial side.
 // Neither metric distance nor camera calibration is measured by this fit.
-export function homographyPose(Hpixel, normal, camera, matches) {
+// options.lenient keeps a moderately non-rigid decomposition (assumed intrinsics or a
+// slightly wrong normal under a large baseline) instead of rejecting it; gross
+// non-rigidity (a hand, mixed depth) is still rejected.
+export function homographyPose(Hpixel, normal, camera, matches, options = {}) {
+  const lenient = options.lenient === true;
   if (
     !Array.isArray(Hpixel) ||
     Hpixel.length !== 9 ||
@@ -132,7 +142,7 @@ export function homographyPose(Hpixel, normal, camera, matches) {
     v = D.map((value, i) => inverseFactor * ((aa + rootDet) * value - ab * A[i]));
   // A rigid plane needs equal singular values in its two tangent directions.
   const rigidityError = Math.sqrt(Math.max(0, 2 * trace - sigmaSum * sigmaSum)) / sigmaSum;
-  if (!Number.isFinite(rigidityError) || rigidityError > 0.15) return null;
+  if (!Number.isFinite(rigidityError) || rigidityError > (lenient ? 0.2 : 0.15)) return null;
   let observations;
   if (matches !== undefined) {
     if (!Array.isArray(matches) || matches.length < 4) return null;
@@ -201,7 +211,8 @@ export function homographyPose(Hpixel, normal, camera, matches) {
       // A substantially nonrigid homography must not become a plausible-looking pose.
       // Assumed intrinsics make the rigid residual grow with viewpoint change; a
       // hand or mixed-depth fit is far beyond this cap.
-      if (!Number.isFinite(reprojectionError) || reprojectionError > 9) return null;
+      if (!Number.isFinite(reprojectionError) || reprojectionError > (lenient ? 25 : 9))
+        return null;
       return { rotation, translationOverDistance, reprojectionError, rigidityError };
     }
   }

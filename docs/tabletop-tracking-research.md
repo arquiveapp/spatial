@@ -97,6 +97,24 @@ keeps the map. The withheld pose during confirmation no longer rolls back the fl
 within 0.2 rad / 0.15 of the last one is accepted at once after loss, and coarse recovery is bounded
 to alternate lost frames, 16 features and a 9×9×3 grid (~2 ms per lost frame in Node).
 
+### Fourth device round: approach failures and self-calibration
+
+`SP-3BB644D8` (build `b4efe73`) reached 2% dropped frames and 11.5 ms engine time, but lost the
+model for up to 7.8 s while the user walked toward it, with the visual homography still accepted
+and only the rigid decomposition failing under the assumed 65° field of view and gravity normal.
+The session now self-calibrates: 15 field-of-view candidates and 25 small normal tilts are scored
+by the rigid reprojection error of accepted homographies on large-baseline frames, and a clearly
+better candidate is adopted with the anchor re-derived from the tapped reference pixel. This is
+the plane-based self-calibration idea of scoring focal-length hypotheses by the geometric
+consistency of homography decompositions (Zhang, "A flexible new technique for camera
+calibration", IEEE TPAMI 2000; [plane-based self-calibration for structure from motion](https://patents.google.com/patent/US20130044186A1/en);
+[Herrera et al., "Forget the checkerboard: practical self-calibration using a planar scene", WACV 2016](https://users.aalto.fi/~kannalj1/publications/wacv2016.pdf)),
+reduced here to a one-dimensional focal search plus a bounded normal tilt because the normal is
+already known from gravity and the rotation is cross-checked by the gyroscope. A moderately
+non-rigid decomposition is now followed as a flagged degraded pose instead of hiding the model,
+and only gross non-rigidity is rejected. See the
+[fourth device note](evidence/2026-09-07-fourth-device-diagnostic.md).
+
 ## Evidence and remaining limits
 
 Deterministic tests cover a pan that moves the tapped region completely out of view and back, a

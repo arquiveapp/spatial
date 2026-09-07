@@ -11,7 +11,13 @@ import {
   MAPPINGS,
   mappingLabel,
 } from "../tools/devlab/patch.mjs";
-import { intrinsics, rotationHomography, relativeAngle } from "../tools/devlab/tracking-math.mjs";
+import {
+  intrinsics,
+  intrinsicsFor,
+  rotationHomography,
+  relativeAngle,
+  homographyPose,
+} from "../tools/devlab/tracking-math.mjs";
 
 const width = 240,
   height = 320;
@@ -433,6 +439,105 @@ test("the predicted homography keeps the floor when a large off-plane object sli
     assertGeometry(result, h, step <= 12 ? 1.5 : 6);
     previous = h;
   }
+});
+
+test("the session self-calibrates the field of view from large-baseline homographies", () => {
+  // The synthetic camera has a 72.5-degree long-edge field of view; the session assumes 65.
+  const fixture = sessionFixture(),
+    { w, h, session, frameAt, gravity } = fixture,
+    trueCamera = intrinsicsFor(w, h, 72.5);
+  session.place([0.5, 0.5]);
+  assert.equal(session.frame(frameAt(identity()), 40).state, "tracking");
+  assert.equal(session.intrinsicsReport().source, "assumed");
+  let time = 40,
+    R = identity();
+  const rate = { alpha: 6, beta: -14, gamma: 12 };
+  let last;
+  for (let i = 0; i < 70; i++) {
+    session.motion([
+      { time: time + 16, rate, gravity, interval: 16 },
+      { time: time + 32, rate, gravity, interval: 16 },
+    ]);
+    time += 33;
+    R = integrate(R, rate, 0.033);
+    last = session.frame(frameAt(rotationHomography(trueCamera, R)), time);
+    assert.ok(last.state === "tracking" || last.state === "bridging", last.reason);
+  }
+  const report = session.intrinsicsReport();
+  assert.equal(report.source, "estimated", JSON.stringify(report));
+  assert.ok(Math.abs(report.fovDeg - 72.5) <= 2.5, `fov ${report.fovDeg}`);
+  assert.equal(last.intrinsics.fovDeg, report.fovDeg);
+});
+
+test("a moderately non-rigid plane fit is followed as degraded instead of hidden", () => {
+  // A tilted-plane approach seen through a 74-degree lens but interpreted with 65 degrees:
+  // strict decomposition fails, lenient succeeds. The session keeps tracking, flagged.
+  const camera65 = intrinsics(360, 640),
+    camera74 = intrinsicsFor(360, 640, 74),
+    n = [0, -0.5, Math.sqrt(0.75)],
+    K = (c) => [c.focal, 0, c.cx, 0, c.focal, c.cy, 0, 0, 1],
+    Kinv = (c) => [1 / c.focal, 0, -c.cx / c.focal, 0, 1 / c.focal, -c.cy / c.focal, 0, 0, 1],
+    mul = (a, b) =>
+      Array.from({ length: 9 }, (_, i) =>
+        [0, 1, 2].reduce((s, k) => s + a[Math.floor(i / 3) * 3 + k] * b[k * 3 + (i % 3)], 0),
+      );
+  let H = null,
+    strictNull = false;
+  for (const scale of [0.6, 0.9, 1.2, 1.5, 1.8]) {
+    const tt = [0.15 * scale, -0.2 * scale, -0.55 * scale],
+      Rt = [1, 0, 0, 0, 1, 0, 0, 0, 1].map((v, i) => v + tt[Math.floor(i / 3)] * n[i % 3]);
+    const candidate = mul(mul(K(camera74), Rt), Kinv(camera74)),
+      matches = [];
+    for (const x of [-120, -60, 0, 60, 120])
+      for (const y of [-200, -100, 0, 100, 200]) {
+        const reference = [camera65.cx + x, camera65.cy + y],
+          z = candidate[6] * reference[0] + candidate[7] * reference[1] + candidate[8];
+        matches.push({
+          reference,
+          current: [
+            (candidate[0] * reference[0] + candidate[1] * reference[1] + candidate[2]) / z,
+            (candidate[3] * reference[0] + candidate[4] * reference[1] + candidate[5]) / z,
+          ],
+        });
+      }
+    const strict = homographyPose(candidate, n, camera65, matches),
+      lenient = homographyPose(candidate, n, camera65, matches, { lenient: true });
+    if (!strict && lenient) {
+      H = { candidate, matches };
+      strictNull = true;
+      break;
+    }
+  }
+  assert.ok(strictNull, "no scale produced a strict-fail / lenient-pass decomposition");
+  // Drive a session fixture with this fit through a stubbed tracker.
+  const session = new TrackingSession(360, 640);
+  session.normal = n;
+  session.center = [180, 320];
+  session.anchorMatrix = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -1, 1];
+  session.lastPose = { rotation: identity(), translationOverDistance: [0, 0, 0] };
+  session.lastAccepted = 0;
+  session.features.reference = { frame: "accepted" };
+  session.features.previous = session.features.reference;
+  session.features.track = () => {
+    session.features.previous = { frame: "candidate" };
+    session.features.homography = [...H.candidate];
+    return {
+      state: "tracking",
+      homography: [...H.candidate],
+      matches: H.matches,
+      inliers: H.matches.length,
+      features: H.matches.length,
+      reprojectionError: 0,
+    };
+  };
+  // Large baseline: the jump gate asks for confirmation once, then accepts.
+  const first = session.frame(new Uint8Array(0), 33);
+  const second = session.frame(new Uint8Array(0), 66);
+  const accepted = [first, second].find((r) => r.state === "tracking") ?? second;
+  assert.equal(accepted.state, "tracking", accepted.reason);
+  assert.equal(accepted.degraded, true);
+  assert.ok(accepted.poseRigidityError <= 0.2);
+  assert.notEqual(session.features.previous, session.features.reference);
 });
 
 test("gyro integrates real rotation whether the interval arrives in ms or iOS seconds", () => {

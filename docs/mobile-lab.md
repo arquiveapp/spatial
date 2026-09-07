@@ -182,3 +182,12 @@ prediction as the consensus hypothesis with a 35% floor, refits tightly, weights
 drops whole-level gradient arrays (pyramid cost) and bridges 2.5 s with a validated gyro. Expected
 next-run signals: fewer `non-rigid-or-ambiguous-pose` losses, a higher `stateFrames.tracking` share,
 lower `phaseMs.pyramidMs`.
+
+## Fourth device diagnostic — 2026-09-07
+
+`SP-3BB644D8` on `b4efe73`: 2% dropped frames, 11.5 ms engine time, but a 7.8 s loss while
+approaching the model with the plane still visually tracked (rigid decomposition rejected under the
+assumed intrinsics). See the [evidence note](evidence/2026-09-07-fourth-device-diagnostic.md). The
+lab now self-calibrates the field of view and normal (`metrics.intrinsics`), follows moderately
+non-rigid fits as degraded poses (`metrics.degradedFrames`), keeps bridged poses at full opacity
+for 300 ms, and records losses ended by a re-tap (`endedBy:"replaced"`, `replacedDuringLoss`).
