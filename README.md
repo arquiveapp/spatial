@@ -53,7 +53,7 @@ docs/                         Decisions, dependency rights and release requireme
 ```
 
 The initial packaging format is ESM with declarations. CommonJS is not advertised. Build output
-is generated in `dist/`; only that output, the README, licence and package metadata enter the
+is generated in `dist/`; only that output, the README, changelog, licence and package metadata enter the
 tarball. A consumer installation is tested independently of this checkout, including ESM import
 without browser globals and TypeScript resolution in NodeNext and Bundler modes.
 
@@ -65,3 +65,12 @@ Third-party components retain their own licences; MIT here never overrides their
 
 See [dependency rights](docs/dependencies.md), [current decisions](docs/decisions.md) and
 [release preparation](docs/releasing.md).
+
+## Maintenance workflow
+
+Maintainers develop on `main`; releases are selected commits marked with annotated version tags.
+No permanent release branches or CI/CD. Versions and npm channels are selected locally following
+[the maintenance policy](docs/maintenance.md); [CHANGELOG.md](CHANGELOG.md) records consumer changes.
+
+The root [AGENTS.md](AGENTS.md) routes tasks to scoped guides. `CLAUDE.md` files import those same
+instructions; see [how instructions are maintained](docs/agent-instructions.md).

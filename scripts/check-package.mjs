@@ -21,6 +21,7 @@ try {
   for (const required of [
     "package.json",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "dist/index.js",
     "dist/index.d.ts",
@@ -29,7 +30,7 @@ try {
   }
   for (const path of paths) {
     assert(
-      /^(?:package\.json|README\.md|LICENSE|dist\/[^.].*)$/.test(path),
+      /^(?:package\.json|README\.md|CHANGELOG\.md|LICENSE|dist\/[^.].*)$/.test(path),
       `Unexpected published file: ${path}`,
     );
   }

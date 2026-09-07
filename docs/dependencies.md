@@ -3,6 +3,20 @@
 No runtime dependencies, WASM engines, model weights or third-party model assets are currently
 distributed. The root MIT licence covers original repository code only.
 
+## Rules before adding or upgrading a component
+
+- Inspect the exact version and actual licence files, including transitive dependencies and
+  native code compiled into WASM. Copied examples, model weights and datasets count too.
+- Preserve required notices, attribution and corresponding source/build materials.
+- Permissive commercial/proprietary downstream use is the intended contract. Do not ship
+  copyleft, noncommercial, source-available or proprietary components without an explicit
+  distribution decision explaining their effect on that contract.
+- A wrapper, Worker, dynamic import, iframe or separate package is not assumed to remove
+  obligations. Do not relabel third-party code with our MIT licence. Surface a material rights
+  conflict with alternatives before committing the architecture to that dependency.
+- Record shipped versus development-only code, source/version, licence, consumer obligations
+  and unresolved questions here. Metadata alone does not complete the rights review.
+
 ## Direct development tools
 
 | Tool       | Version | Reported licence | Shipped in the library tarball? | Source                                  |

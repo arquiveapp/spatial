@@ -10,6 +10,10 @@
 - npm lockfile, strict types, formatting, publint and real packed-consumer checks.
 - Public GitHub source; npm publication disabled. All checks and publication are local.
   No CI/CD workflows, hosted services or release credentials.
+- Main is the only long-lived branch; releases use annotated tags from checked main commits.
+  See [maintenance](maintenance.md) for versions, channels and compatibility.
+- Root agent instructions are an index plus global rules; existing subtrees carry local rules.
+  Adjacent CLAUDE files import AGENTS, as described in [instruction design](agent-instructions.md).
 
 ## Pending research and implementation brief
 
