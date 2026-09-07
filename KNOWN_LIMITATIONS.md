@@ -14,7 +14,9 @@
   rigid pose and bounded gyro bridging of short visual gaps. It remains an unshipped experiment
   with assumed 65° long-edge field of view, averaged initial gravity direction and relative
   translation. Camera/IMU calibration, metric scale, multi-plane scenes and general relocalization
-  are absent; the gyro axis mapping and delivery offset are validated online, not calibrated.
+  are absent; the gyro axis mapping and delivery offset are selected online from 48 signed
+  permutations and four offsets by agreement with the visual rotation, not calibrated.
+  Placement waits for a swept, tracked surface; a tap anchors through the current homography.
   Fast motion, leaving the plane entirely, lighting changes and rolling shutter can invalidate the
   fit. Low reprojection error is not physical accuracy. A bridged pose is a flagged prediction,
   shown dimmed for at most 1.5 s. See the

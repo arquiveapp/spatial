@@ -57,26 +57,33 @@ test("rejected nonrigid image fit cannot become the next optical-flow reference"
   const { session, acceptedImage, frame } = fixture();
   const rejected = frame([1, 0.5, 0, 0, 1, 0, 0, 0, 1], 33);
   assert.equal(rejected.reason, "non-rigid-or-ambiguous-pose");
-  assert.equal(rejected.viewMatrix, undefined);
+  // The display briefly holds the last measured pose, flagged as a frozen prediction.
+  assert.equal(rejected.state, "bridging");
+  assert.equal(rejected.predicted, true);
+  assert.equal(rejected.frozen, true);
   assert.equal(session.features.previous, acceptedImage);
   assert.deepEqual(session.features.homography, identity());
   assert.equal(session.features.failures, 1);
   assert.equal(session.lastAccepted, 0);
 });
 
-test("recovery requires consecutive agreeing poses and rolls back the first candidate", () => {
+test("recovery needs consecutive agreeing poses and keeps the withheld fit as the flow reference", () => {
   const { session, acceptedImage, frame } = fixture();
   const moved = [1, 0, 200, 0, 1, 0, 0, 0, 1];
-  assert.equal(frame(moved, 33).reason, "confirming-reference");
-  assert.equal(session.features.previous, acceptedImage);
-  assert.deepEqual(session.features.homography, identity());
+  const withheld = frame(moved, 33);
+  assert.equal(withheld.reason, "confirming-reference");
+  assert.equal(withheld.state, "bridging");
+  // The 2D fit passed every image gate: it stays the optical-flow reference so the
+  // confirming frame starts from the right image, while no measured pose is published.
+  assert.notEqual(session.features.previous, acceptedImage);
+  assert.deepEqual(session.features.homography, moved);
+  assert.equal(session.lastAccepted, 0);
   assert.equal(frame([1, 0.5, 0, 0, 1, 0, 0, 0, 1], 66).reason, "non-rigid-or-ambiguous-pose");
   assert.equal(session.candidate, null);
   assert.equal(frame(moved, 99).reason, "confirming-reference");
   const recovered = frame(moved, 132);
   assert.equal(recovered.state, "tracking");
   assert.equal(recovered.recoveries, 1);
-  assert.notEqual(session.features.previous, acceptedImage);
   assert.deepEqual(session.features.homography, moved);
 });
 
@@ -87,12 +94,17 @@ test("repeated ambiguous 180-degree planar fits cannot overturn the accepted ori
     const rejected = frame(halfTurn, timestamp);
     assert.equal(rejected.reason, "orientation-branch-rejected");
     assert.equal(rejected.referenceRetained, true);
-    assert.equal(rejected.viewMatrix, undefined);
+    // Held frozen inside the short bridge window, hidden after it; never a measurement.
+    assert.equal(rejected.state, timestamp <= 700 ? "bridging" : "recovering");
+    if (rejected.state === "bridging") assert.equal(rejected.frozen, true);
+    else assert.equal(rejected.viewMatrix, undefined);
     assert.equal(session.features.previous, acceptedImage);
     assert.deepEqual(session.features.homography, identity());
     assert.deepEqual(session.lastPose.rotation, identity());
     assert.equal(session.candidate, null);
   }
-  assert.equal(frame(identity(), 2033).reason, "confirming-reference");
-  assert.equal(frame(identity(), 2066).state, "tracking");
+  // Back at the accepted orientation: consistent with the last pose, accepted at once.
+  const back = frame(identity(), 2033);
+  assert.equal(back.state, "tracking");
+  assert.equal(back.recoveries, 1);
 });

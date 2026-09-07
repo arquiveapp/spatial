@@ -15,7 +15,7 @@ import {
   relativeAngle,
   anchorScreen,
 } from "./tracking-math.mjs";
-import { FeaturePlane } from "./feature-plane.mjs";
+import { FeaturePlane, project, invert } from "./feature-plane.mjs";
 export function multiply(a, b) {
   return Array.from(
     { length: 9 },
@@ -28,7 +28,61 @@ export function multiply(a, b) {
 export function identity() {
   return [1, 0, 0, 0, 1, 0, 0, 0, 1];
 }
-export function integrate(R, rate, dt) {
+// Signed axis permutations from W3C device rates (alpha, beta, gamma) to the optical
+// angular-velocity vector. tracking-math.mjs derives [-beta, +gamma, +alpha] for a rear
+// camera held in portrait. The first iPhone diagnostic disagreed with that derivation by
+// about 130% of the rotation, so the session scores every candidate against the visual
+// rotation it measures and adopts the one that agrees, instead of trusting a derivation.
+export const MAPPINGS = [];
+for (const perm of [
+  [0, 1, 2],
+  [0, 2, 1],
+  [1, 0, 2],
+  [1, 2, 0],
+  [2, 0, 1],
+  [2, 1, 0],
+])
+  for (const s0 of [1, -1])
+    for (const s1 of [1, -1])
+      for (const s2 of [1, -1]) MAPPINGS.push({ perm, signs: [s0, s1, s2] });
+export const mappingLabel = (m) =>
+  m.perm.map((p, i) => (m.signs[i] < 0 ? "-" : "+") + "abg"[p]).join(",");
+export const DEFAULT_MAPPING = MAPPINGS.find((m) => mappingLabel(m) === "-b,+g,+a");
+export const mapRates = (vector, mapping = DEFAULT_MAPPING) =>
+  mapping.perm.map((p, i) => mapping.signs[i] * vector[p]);
+// exp([v]x) R for a small rotation vector v (radians), Rodrigues form.
+export function rotateBy(R, v) {
+  const angle = Math.hypot(v[0], v[1], v[2]);
+  if (!(angle > 1e-10)) return R;
+  const a = v[0] / angle,
+    b = v[1] / angle,
+    c = v[2] / angle,
+    s = Math.sin(angle),
+    w = 1 - Math.cos(angle),
+    co = Math.cos(angle);
+  return multiply(
+    [
+      co + a * a * w,
+      a * b * w - c * s,
+      a * c * w + b * s,
+      b * a * w + c * s,
+      co + b * b * w,
+      b * c * w - a * s,
+      c * a * w - b * s,
+      c * b * w + a * s,
+      co + c * c * w,
+    ],
+    R,
+  );
+}
+// Rotation vector (axis * angle) of R; inverse of rotateBy for |angle| < pi.
+export function rotationVector(R) {
+  const angle = Math.acos(Math.max(-1, Math.min(1, (R[0] + R[4] + R[8] - 1) / 2)));
+  if (angle < 1e-9) return [0, 0, 0];
+  const k = angle / (2 * Math.sin(angle));
+  return [(R[7] - R[5]) * k, (R[2] - R[6]) * k, (R[3] - R[1]) * k];
+}
+export function integrate(R, rate, dt, mapping = DEFAULT_MAPPING) {
   if (
     !rate ||
     ![rate.alpha, rate.beta, rate.gamma, dt].every(Number.isFinite) ||
@@ -36,33 +90,8 @@ export function integrate(R, rate, dt) {
     dt > 0.1
   )
     return R;
-  // Optical scene rotation is -C*omega, C=diag(1,-1,-1); see tracking-math.mjs.
-  // Sensor axes and camera calibration still require physical validation.
-  const x = ((-rate.beta * Math.PI) / 180) * dt,
-    y = ((rate.gamma * Math.PI) / 180) * dt,
-    z = ((rate.alpha * Math.PI) / 180) * dt;
-  const angle = Math.hypot(x, y, z);
-  if (angle < 1e-10) return R;
-  const a = x / angle,
-    b = y / angle,
-    c = z / angle,
-    s = Math.sin(angle),
-    v = 1 - Math.cos(angle),
-    co = Math.cos(angle);
-  return multiply(
-    [
-      co + a * a * v,
-      a * b * v - c * s,
-      a * c * v + b * s,
-      b * a * v + c * s,
-      co + b * b * v,
-      b * c * v - a * s,
-      c * a * v - b * s,
-      c * b * v + a * s,
-      co + c * c * v,
-    ],
-    R,
-  );
+  const k = (Math.PI / 180) * dt;
+  return rotateBy(R, mapRates([rate.alpha * k, rate.beta * k, rate.gamma * k], mapping));
 }
 function sample(im, x, y, w, h) {
   if (x < 0 || y < 0 || x >= w - 1 || y >= h - 1) return null;
@@ -261,11 +290,16 @@ export class PlanarPatch {
   }
 }
 
-// Visual-plane session: the initial reference and anchor live until explicit reposition.
-// Gyro rotation only predicts where the plane moved and bridges short visual gaps;
-// every displayed measured pose comes from visual consensus on the growing plane map.
+// Visual-plane session. A provisional plane map starts as soon as the phone aims down
+// steadily ("scanning"); the surface counts as ready after sustained tracking under
+// motion, and a tap then anchors the model through the current homography inside that
+// mature map. The gyroscope's axis mapping and delivery offset are selected online by
+// agreement with the visual rotation; when validated, the gyro predicts optical flow
+// and bridges short visual gaps, otherwise gaps are bridged by a briefly frozen pose.
 // See docs/tabletop-tracking-research.md for algorithm and timing limitations.
 const LATENCY_CANDIDATES = [0, 30, 60, 90];
+const READY_FRAMES = 20;
+const READY_FEATURES = 50;
 export class TrackingSession {
   constructor(width, height) {
     this.width = width;
@@ -289,17 +323,30 @@ export class TrackingSession {
     this.recovering = false;
     this.candidate = null;
     this.distance = 0.65;
-    // Scene rotation (camera frame) accumulated since the last accepted frame, per
-    // assumed camera-vs-motion delivery offset. The active offset seeds prediction.
-    this.accumulated = Object.fromEntries(LATENCY_CANDIDATES.map((l) => [l, identity()]));
-    this.latencyMs = 30;
+    // Exact scene rotation since the last accepted frame under the active mapping and
+    // delivery offset (seeds prediction), plus small-angle device vectors per offset
+    // that score every candidate axis mapping against the measured visual rotation.
+    this.accumulated = identity();
+    this.deviceAngle = Object.fromEntries(LATENCY_CANDIDATES.map((l) => [l, [0, 0, 0]]));
     this.consistency = Object.fromEntries(
-      LATENCY_CANDIDATES.map((l) => [l, { frames: 0, residual: 0, gyro: 0 }]),
+      LATENCY_CANDIDATES.map((l) => [l, MAPPINGS.map(() => ({ frames: 0, residual: 0, gyro: 0 }))]),
     );
+    this.mapping = DEFAULT_MAPPING;
+    this.latencyMs = 30;
     this.prediction = "untested";
+    this.calibrationFrames = 0;
+    this.bestRatio = null;
     this.bridgeMs = 1500;
+    this.frozenBridgeMs = 700;
     this.lastMotionSpeed = 0;
     this.bridged = null;
+    this.bridgedAt = null;
+    this.surfaceReady = false;
+    this.readyFrames = 0;
+    this.scanLost = 0;
+    this.scanRotation = 0;
+    this.scanTranslation = 0;
+    this.provisionalAt = null;
   }
   motion(samples) {
     for (const sample of samples) {
@@ -318,11 +365,8 @@ export class TrackingSession {
       }
       const rate = sample.rate;
       if (rate && [rate.alpha, rate.beta, rate.gamma].every(Number.isFinite)) {
-        // iOS Safari reports event.interval in seconds (~0.016); the W3C intent
-        // is milliseconds. Dividing an iOS interval by 1000 collapsed dt to ~1e-5
-        // and integrated ~zero rotation, so prediction never activated on device.
-        // Delivery timestamps are unambiguous, so derive dt from them and use the
-        // reported interval only as a plausibility fallback for the first sample.
+        // iOS Safari reports event.interval in seconds (~0.016); the W3C intent is
+        // milliseconds. Delivery timestamps are unambiguous, so dt comes from them.
         const previous = this.gyro.at(-1);
         const stepMs = previous && sample.time > previous.time ? sample.time - previous.time : null;
         const intervalMs = Number.isFinite(sample.interval)
@@ -343,12 +387,25 @@ export class TrackingSession {
       }
     }
   }
-  // Scene rotation in the camera frame over delivery-time window (t0, t1].
+  // Exact scene rotation (camera frame, active mapping) over delivery window (t0, t1].
   rotationBetween(t0, t1) {
     let R = identity();
     for (const sample of this.gyro)
-      if (sample.time > t0 && sample.time <= t1) R = integrate(R, sample.rate, sample.dt);
+      if (sample.time > t0 && sample.time <= t1)
+        R = integrate(R, sample.rate, sample.dt, this.mapping);
     return R;
+  }
+  // Raw device-axis small-angle vector (alpha, beta, gamma order, radians) over (t0, t1].
+  deviceAngleBetween(t0, t1) {
+    const v = [0, 0, 0];
+    for (const sample of this.gyro)
+      if (sample.time > t0 && sample.time <= t1) {
+        const k = (Math.PI / 180) * sample.dt;
+        v[0] += sample.rate.alpha * k;
+        v[1] += sample.rate.beta * k;
+        v[2] += sample.rate.gamma * k;
+      }
+    return v;
   }
   gravityEstimate(now) {
     const recent = this.gravitySamples.filter((s) => s.time >= now - 500);
@@ -360,6 +417,21 @@ export class TrackingSession {
     );
     return { mean, spread, count: recent.length };
   }
+  // Downward plane normal in the optical frame from steady gravity, or a scanning hint.
+  planeNormal(sent, age) {
+    if (!this.gravity || age === null || age < -100 || age > 500)
+      return { reason: "waiting-for-sensors" };
+    const estimate = this.gravityEstimate(sent);
+    const g = estimate?.mean ?? [this.gravity.x, this.gravity.y, this.gravity.z];
+    const n = [g[0], -g[1], -g[2]],
+      norm = Math.hypot(...n);
+    if (norm < 7 || norm > 12 || (estimate && estimate.spread > 0.9))
+      return { reason: "hold-still" };
+    let normal = n.map((v) => v / norm);
+    if (normal[2] < 0) normal = normal.map((v) => -v);
+    if (normal[2] < 0.15) return { reason: "point-down-at-table" };
+    return { normal, spread: estimate?.spread ?? null };
+  }
   place(point) {
     if (
       !Array.isArray(point) ||
@@ -369,33 +441,128 @@ export class TrackingSession {
       return;
     this.pending = [...point];
     this.pendingAt = null;
+  }
+  // Drop the anchor but keep the plane map, so the next tap is immediate.
+  unplace() {
     this.anchorMatrix = null;
-    this.lastPose = null;
+    this.center = null;
+    this.pending = null;
     this.candidate = null;
-    this.lastAccepted = null;
     this.recovering = false;
     this.bridged = null;
+    this.bridgedAt = null;
+  }
+  dropProvisional() {
+    this.features = new FeaturePlane(this.width, this.height);
+    this.surfaceReady = false;
+    this.readyFrames = 0;
+    this.scanLost = 0;
+    this.scanRotation = 0;
+    this.scanTranslation = 0;
+    this.lastPose = null;
+    this.lastAccepted = null;
+    this.provisionalAt = null;
+  }
+  resetAccumulators() {
+    this.accumulated = identity();
+    for (const l of LATENCY_CANDIDATES) this.deviceAngle[l] = [0, 0, 0];
   }
   gyroReport() {
-    const active = this.consistency[this.latencyMs];
+    const active = this.consistency[this.latencyMs][MAPPINGS.indexOf(this.mapping)];
     return {
       prediction: this.prediction,
+      mapping: mappingLabel(this.mapping),
       latencyMs: this.latencyMs,
       samples: this.gyroSamples,
       motionDegPerS: this.lastMotionSpeed,
       residualDeg: active.frames ? ((active.residual / active.frames) * 180) / Math.PI : null,
       residualRatio: active.gyro > 0 ? active.residual / active.gyro : null,
       frames: active.frames,
+      calibrationFrames: this.calibrationFrames,
+      bestRatio: this.bestRatio,
       byLatencyMs: Object.fromEntries(
-        Object.entries(this.consistency).map(([l, c]) => [
-          l,
-          c.gyro > 0 ? Math.round((c.residual / c.gyro) * 1000) / 1000 : null,
-        ]),
+        LATENCY_CANDIDATES.map((l) => {
+          const c = this.consistency[l][MAPPINGS.indexOf(this.mapping)];
+          return [l, c.gyro > 0 ? Math.round((c.residual / c.gyro) * 1000) / 1000 : null];
+        }),
       ),
     };
   }
+  // Score every (delivery offset, axis mapping) hypothesis against the visual rotation
+  // since the last accepted pose, on frames with measurable gyro motion. Adopt the
+  // best once it is clearly consistent; disable prediction if nothing agrees.
+  calibrate(pose) {
+    if (!this.gyro.length || !this.lastPose) return;
+    const visual = rotationVector(multiply3(pose.rotation, transpose3(this.lastPose.rotation)));
+    let counted = false;
+    for (const l of LATENCY_CANDIDATES) {
+      const d = this.deviceAngle[l],
+        magnitude = Math.hypot(d[0], d[1], d[2]);
+      if (magnitude < 0.01) continue;
+      counted = true;
+      const rows = this.consistency[l];
+      for (let m = 0; m < MAPPINGS.length; m++) {
+        const v = mapRates(d, MAPPINGS[m]),
+          c = rows[m];
+        c.frames++;
+        c.gyro += magnitude;
+        c.residual += Math.hypot(visual[0] - v[0], visual[1] - v[1], visual[2] - v[2]);
+      }
+    }
+    if (!counted) return;
+    this.calibrationFrames++;
+    if (this.calibrationFrames % 5 !== 0) return;
+    let best = null;
+    for (const l of LATENCY_CANDIDATES)
+      this.consistency[l].forEach((c, m) => {
+        if (c.frames < 30 || !(c.gyro > 0)) return;
+        const ratio = c.residual / c.gyro;
+        // Prefer the derived default within a 5% tie so pure single-axis motion cannot
+        // pick an arbitrary look-alike; otherwise the lowest residual wins.
+        if (
+          !best ||
+          ratio < best.ratio * 0.95 ||
+          (ratio < best.ratio * 1.05 && MAPPINGS[m] === DEFAULT_MAPPING && l === this.latencyMs)
+        )
+          best = { l, m, ratio, frames: c.frames };
+      });
+    if (!best) return;
+    this.bestRatio = best.ratio;
+    if (best.ratio < 0.5) {
+      const current = this.consistency[this.latencyMs][MAPPINGS.indexOf(this.mapping)],
+        currentRatio = current.gyro > 0 ? current.residual / current.gyro : Infinity;
+      if (
+        (MAPPINGS[best.m] !== this.mapping || best.l !== this.latencyMs) &&
+        (this.prediction !== "active" || best.ratio < currentRatio * 0.8)
+      ) {
+        this.mapping = MAPPINGS[best.m];
+        this.latencyMs = best.l;
+        this.accumulated = identity();
+      }
+      this.prediction = "active";
+    } else if (best.frames >= 60) this.prediction = "disabled-inconsistent";
+  }
   matrices(pose) {
     return cameraMatrices(pose.rotation, pose.translationOverDistance, this.camera, this.distance);
+  }
+  scanResult(sent, age, reason, visual, pose = null) {
+    return {
+      state: "scanning",
+      reason,
+      surfaceReady: this.surfaceReady,
+      readyFrames: this.readyFrames,
+      width: this.width,
+      height: this.height,
+      inliers: visual?.inliers ?? 0,
+      features: visual?.features ?? this.features.features.length,
+      visibleFeatures: visual?.visible ?? 0,
+      addedFeatures: visual?.added ?? 0,
+      poseReprojectionError: pose?.reprojectionError ?? null,
+      gyro: this.gyroReport(),
+      timings: visual?.timings ?? null,
+      motionAgeMs: age,
+      timestampMs: sent,
+    };
   }
   result(pose, visual, sent, motionAgeMs) {
     return {
@@ -420,23 +587,24 @@ export class TrackingSession {
       recoveries: this.recoveries,
       recoveryJumpPx: pose.recoveryJumpPx ?? null,
       gyro: this.gyroReport(),
+      timings: visual.timings ?? null,
       motionAgeMs,
       timestampMs: sent,
       timing: "frame-callback-and-motion-delivery; no exposure/IMU calibration",
     };
   }
-  // Rotation-only prediction from the last accepted pose. Explicitly a prediction,
-  // bounded in time, never a measurement and never a new anchor.
+  // Prediction from the last accepted pose while vision has no consensus: gyro-rotated
+  // for up to 1.5 s when the mapping is validated, otherwise frozen for up to 0.7 s.
+  // Explicitly a prediction, never a measurement, never a new anchor.
   bridge(sent, reason, visual, age) {
+    const active = this.prediction === "active" && this.gyro.length > 0;
     if (
       !this.lastPose ||
       this.lastAccepted === null ||
-      sent - this.lastAccepted > this.bridgeMs ||
-      this.prediction === "disabled-inconsistent" ||
-      !this.gyro.length
+      sent - this.lastAccepted > (active ? this.bridgeMs : this.frozenBridgeMs)
     )
       return null;
-    const R = this.accumulated[this.latencyMs],
+    const R = active ? this.accumulated : identity(),
       rotation = multiply3(R, this.lastPose.rotation),
       t = this.lastPose.translationOverDistance,
       translationOverDistance = [0, 1, 2].map(
@@ -449,6 +617,7 @@ export class TrackingSession {
       state: "bridging",
       reason,
       predicted: true,
+      frozen: !active,
       bridgedMs: sent - this.lastAccepted,
       referenceRetained: true,
       width: this.width,
@@ -461,6 +630,7 @@ export class TrackingSession {
       visibleFeatures: visual?.visible ?? 0,
       recoveries: this.recoveries,
       gyro: this.gyroReport(),
+      timings: visual?.timings ?? null,
       motionAgeMs: age,
       timestampMs: sent,
     };
@@ -468,63 +638,126 @@ export class TrackingSession {
   frame(luma, sent) {
     if (!Number.isFinite(sent)) return { state: "lost", reason: "invalid-frame-clock" };
     const age = this.lastMotion === null ? null : sent - this.lastMotion;
-    // Gyro rotation over this frame interval, for each delivery-offset hypothesis.
     let motionSpeed = 0;
     if (this.lastFrameTime !== null && sent > this.lastFrameTime) {
       for (const l of LATENCY_CANDIDATES) {
-        const delta = this.rotationBetween(this.lastFrameTime - l, sent - l);
-        this.accumulated[l] = multiply3(delta, this.accumulated[l]);
-        if (l === this.latencyMs)
-          motionSpeed =
-            (relativeAngle(delta, identity()) * 180) /
-            Math.PI /
-            ((sent - this.lastFrameTime) / 1000);
+        const v = this.deviceAngleBetween(this.lastFrameTime - l, sent - l),
+          a = this.deviceAngle[l];
+        a[0] += v[0];
+        a[1] += v[1];
+        a[2] += v[2];
       }
+      const delta = this.rotationBetween(
+        this.lastFrameTime - this.latencyMs,
+        sent - this.latencyMs,
+      );
+      this.accumulated = multiply3(delta, this.accumulated);
+      motionSpeed =
+        (relativeAngle(delta, identity()) * 180) / Math.PI / ((sent - this.lastFrameTime) / 1000);
     }
     this.lastMotionSpeed = motionSpeed;
     this.lastFrameTime = sent;
     let visual, checkpoint;
     if (this.pending) {
       this.pendingAt ??= sent;
-      if (!this.gravity || age === null || age < -100 || age > 500) {
-        if (sent - this.pendingAt > 3000) {
-          this.pending = null;
-          return { state: "unplaced", reason: "sensor-permission-or-data-unavailable" };
+      const mapReady =
+        this.features.reference &&
+        this.lastPose &&
+        this.lastAccepted !== null &&
+        sent - this.lastAccepted < 200 &&
+        (this.surfaceReady || this.anchorMatrix);
+      if (mapReady) {
+        // Anchor through the current homography inside the mature map: the tapped
+        // pixel becomes a plane point in reference coordinates; no re-detection.
+        const q = [this.pending[0] * this.width, this.pending[1] * this.height],
+          inv = invert(this.features.homography),
+          p = inv ? project(inv, q) : null,
+          anchor =
+            p && p.every(Number.isFinite)
+              ? anchorForPlane(p, this.normal, this.camera, this.distance)
+              : null;
+        this.pending = null;
+        if (!anchor) return this.scanResult(sent, age, "point-down-at-table", null);
+        this.center = p;
+        this.anchorMatrix = anchor;
+        this.recovering = false;
+        this.candidate = null;
+        this.bridged = null;
+      } else if (!this.features.reference || sent - this.pendingAt > 1500) {
+        // Immediate placement on a fresh single-frame reference (no provisional map
+        // yet, or readiness did not arrive in time). Needs steady gravity.
+        const plane = this.planeNormal(sent, age);
+        if (!plane.normal) {
+          if (plane.reason === "waiting-for-sensors" && sent - this.pendingAt > 3000) {
+            this.pending = null;
+            return { state: "unplaced", reason: "sensor-permission-or-data-unavailable" };
+          }
+          return { state: "initializing", reason: plane.reason, motionAgeMs: age };
         }
-        return { state: "initializing", reason: "waiting-for-sensors", motionAgeMs: age };
+        this.normal = plane.normal;
+        this.center = [this.pending[0] * this.width, this.pending[1] * this.height];
+        const anchor = anchorForPlane(this.center, this.normal, this.camera, this.distance);
+        if (!anchor) return { state: "initializing", reason: "point-down-at-table" };
+        visual = this.features.place(luma, ...this.center);
+        this.pending = null;
+        if (visual.state !== "tracking")
+          return { state: "unplaced", reason: visual.reason, features: visual.features ?? 0 };
+        this.anchorMatrix = anchor;
+        this.lastPose = null;
+        this.lastAccepted = null;
+        this.candidate = null;
+        this.recovering = false;
+        this.bridged = null;
+        this.surfaceReady = true;
+        this.readyFrames = READY_FRAMES;
+        this.provisionalAt = sent;
+        this.resetAccumulators();
       }
-      const estimate = this.gravityEstimate(sent);
-      const g = estimate?.mean ?? [this.gravity.x, this.gravity.y, this.gravity.z];
-      const n = [g[0], -g[1], -g[2]],
-        norm = Math.hypot(...n);
-      if (norm < 7 || norm > 12 || (estimate && estimate.spread > 0.9))
-        return { state: "initializing", reason: "hold-still", motionAgeMs: age };
-      this.normal = n.map((v) => v / norm);
-      if (this.normal[2] < 0) this.normal = this.normal.map((v) => -v);
-      this.center = [this.pending[0] * this.width, this.pending[1] * this.height];
-      const anchor = anchorForPlane(this.center, this.normal, this.camera, this.distance);
-      if (!anchor || this.normal[2] < 0.15)
-        return { state: "initializing", reason: "point-down-at-table" };
-      visual = this.features.place(luma, ...this.center);
-      this.pending = null;
-      if (visual.state !== "tracking")
-        return { state: "unplaced", reason: visual.reason, features: visual.features ?? 0 };
-      this.anchorMatrix = anchor;
-      this.gravitySpread = estimate?.spread ?? null;
-      for (const l of LATENCY_CANDIDATES) this.accumulated[l] = identity();
-    } else {
-      if (!this.anchorMatrix) return { state: "unplaced", reason: "tap-textured-table" };
+    }
+    if (!visual) {
+      if (!this.features.reference) {
+        // Scanning: start a provisional plane map at the view centre once the phone
+        // aims down steadily. Nothing is anchored; the model stays hidden.
+        const plane = this.planeNormal(sent, age);
+        if (!plane.normal) return this.scanResult(sent, age, plane.reason, null);
+        const start = this.features.place(luma, this.width * 0.5, this.height * 0.58);
+        if (start.state !== "tracking") return this.scanResult(sent, age, start.reason, start);
+        this.normal = plane.normal;
+        this.provisionalAt = sent;
+        this.readyFrames = 0;
+        this.scanLost = 0;
+        this.scanRotation = 0;
+        this.scanTranslation = 0;
+        this.surfaceReady = false;
+        this.lastPose = {
+          rotation: identity(),
+          translationOverDistance: [0, 0, 0],
+          reprojectionError: 0,
+        };
+        this.lastAccepted = sent;
+        this.recovering = false;
+        this.candidate = null;
+        this.resetAccumulators();
+        return this.scanResult(sent, age, "reference-established", start, this.lastPose);
+      }
       checkpoint = this.features.checkpoint();
       const seed =
-        this.prediction !== "disabled-inconsistent" && this.gyro.length
-          ? rotationHomography(this.camera, this.accumulated[this.latencyMs])
+        this.prediction === "active" && this.gyro.length
+          ? rotationHomography(this.camera, this.accumulated)
           : undefined;
       visual = this.features.track(luma, seed);
     }
-    const recover = (reason, extra = {}) => {
+    const anchored = !!this.anchorMatrix;
+    const recover = (reason, restore, keepCandidate = false) => {
       this.recovering = true;
-      this.candidate = null;
-      if (checkpoint) this.features.restore(checkpoint);
+      if (!keepCandidate) this.candidate = null;
+      if (restore && checkpoint) this.features.restore(checkpoint);
+      if (!anchored) {
+        this.readyFrames = 0;
+        this.surfaceReady = false;
+        if (++this.scanLost > 30) this.dropProvisional();
+        return this.scanResult(sent, age, reason, visual);
+      }
       return (
         this.bridge(sent, reason, visual, age) ?? {
           state: "recovering",
@@ -534,34 +767,19 @@ export class TrackingSession {
           features: visual?.features ?? 0,
           visibleFeatures: visual?.visible ?? 0,
           gyro: this.gyroReport(),
+          timings: visual?.timings ?? null,
           motionAgeMs: age,
-          ...extra,
         }
       );
     };
-    if (visual.state !== "tracking") {
-      this.recovering = true;
-      this.candidate = null;
-      return (
-        this.bridge(sent, visual.reason ?? "visual-support-lost", visual, age) ?? {
-          state: "recovering",
-          reason: visual.reason ?? "visual-support-lost",
-          inliers: visual.inliers ?? 0,
-          features: visual.features ?? 0,
-          visibleFeatures: visual.visible ?? 0,
-          referenceRetained: true,
-          gyro: this.gyroReport(),
-          motionAgeMs: age,
-        }
-      );
-    }
+    if (visual.state !== "tracking") return recover(visual.reason ?? "visual-support-lost", false);
     const pose = homographyPose(visual.homography, this.normal, this.camera, visual.matches);
     if (!pose || ![...pose.rotation, ...pose.translationOverDistance].every(Number.isFinite))
-      return recover("non-rigid-or-ambiguous-pose");
+      return recover("non-rigid-or-ambiguous-pose", true);
     if (this.lastPose && this.lastAccepted !== null) {
       const dt = Math.max(0, (sent - this.lastAccepted) / 1000),
-        R = this.accumulated[this.latencyMs],
-        usePrediction = this.prediction !== "disabled-inconsistent" && this.gyro.length > 0,
+        usePrediction = this.prediction === "active" && this.gyro.length > 0,
+        R = this.accumulated,
         predictedRotation = usePrediction
           ? multiply3(R, this.lastPose.rotation)
           : this.lastPose.rotation,
@@ -575,45 +793,15 @@ export class TrackingSession {
         angle = relativeAngle(pose.rotation, predictedRotation);
       // A plane homography cannot resolve a 180-degree branch by itself. Never
       // accept a gross orientation switch just because two ambiguous fits agree.
-      if (angle > 1.2) return recover("orientation-branch-rejected");
-      // Gyro-visual consistency: the visual rotation since the last accepted pose
-      // versus each delivery-offset hypothesis. Moving frames only.
-      if (this.gyro.length) {
-        const visualDelta = multiply3(pose.rotation, transpose3(this.lastPose.rotation));
-        for (const l of LATENCY_CANDIDATES) {
-          const gyroAngle = relativeAngle(this.accumulated[l], identity());
-          if (gyroAngle < 0.01) continue;
-          const c = this.consistency[l];
-          c.frames++;
-          c.gyro += gyroAngle;
-          c.residual += relativeAngle(visualDelta, this.accumulated[l]);
-        }
-        const active = this.consistency[this.latencyMs];
-        if (active.frames >= 30 && this.prediction !== "disabled-inconsistent") {
-          const ratio = active.residual / active.gyro;
-          if (ratio > 0.6) this.prediction = "disabled-inconsistent";
-          else {
-            this.prediction = "active";
-            let best = this.latencyMs,
-              bestRatio = ratio;
-            for (const l of LATENCY_CANDIDATES) {
-              const c = this.consistency[l],
-                r = c.frames >= 30 ? c.residual / c.gyro : Infinity;
-              if (r < bestRatio * 0.8) {
-                best = l;
-                bestRatio = r;
-              }
-            }
-            this.latencyMs = best;
-          }
-        }
-      }
+      if (angle > 1.2) return recover("orientation-branch-rejected", true);
+      this.calibrate(pose);
       const jump =
         translationStep > 0.12 + Math.min(dt, 0.5) * 1.2 || angle > 0.18 + Math.min(dt, 0.5) * 2;
       if (jump || this.recovering) {
-        // After loss, a pose consistent with the gyro-bridged prediction is accepted
-        // at once; anything else needs two agreeing observations first.
-        const consistent = usePrediction && angle < 0.2 && translationStep < 0.15;
+        // A pose close to the (predicted or last) pose is accepted at once. Anything
+        // else needs two agreeing observations; the withheld 2D fit is kept as the
+        // optical-flow reference so the confirming frame starts from the right image.
+        const consistent = angle < 0.2 && translationStep < 0.15;
         const agrees =
           this.candidate &&
           Math.hypot(
@@ -623,10 +811,8 @@ export class TrackingSession {
           ) < 0.08 &&
           pose.rotation.reduce((sum, v, i) => sum + v * this.candidate.rotation[i], 0) > 2.96;
         if (!consistent && !agrees) {
-          const candidate = pose;
-          const response = recover("confirming-reference");
-          this.candidate = candidate;
-          return response;
+          this.candidate = pose;
+          return recover("confirming-reference", false, true);
         }
       }
       // Visible jump only when a bridged (displayed) prediction preceded this frame.
@@ -637,14 +823,34 @@ export class TrackingSession {
           before && after ? Math.hypot(before[0] - after[0], before[1] - after[1]) : null;
       }
     }
-    if (this.recovering) this.recoveries++;
+    if (this.recovering && anchored) this.recoveries++;
     this.recovering = false;
     this.candidate = null;
     this.bridged = null;
     this.bridgedAt = null;
     this.lastPose = pose;
     this.lastAccepted = sent;
-    for (const l of LATENCY_CANDIDATES) this.accumulated[l] = identity();
+    this.scanLost = 0;
+    this.resetAccumulators();
+    if (!anchored) {
+      this.readyFrames++;
+      this.scanRotation = Math.max(this.scanRotation, relativeAngle(pose.rotation, identity()));
+      this.scanTranslation = Math.max(
+        this.scanTranslation,
+        Math.hypot(...pose.translationOverDistance),
+      );
+      this.surfaceReady =
+        this.readyFrames >= READY_FRAMES &&
+        visual.features >= READY_FEATURES &&
+        (this.scanRotation >= 0.035 || this.scanTranslation >= 0.02);
+      return this.scanResult(
+        sent,
+        age,
+        this.surfaceReady ? "surface-ready" : "sweep-surface",
+        visual,
+        pose,
+      );
+    }
     return this.result(pose, visual, sent, age);
   }
 }

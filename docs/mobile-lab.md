@@ -63,8 +63,9 @@ config and restart after intentionally changing assets. No private fixture path 
 
 1. Open the complete URL/QR directly in Safari on iPhone (the initial tester uses iPhone 16).
 2. Hold the phone in portrait and tap **Ver na minha mesa**. Grant motion and rear-camera
-   access. Point at a textured, matte horizontal table in good light, hold still and tap a visible
-   detail. The loaded apartment is rendered with the patch's view/projection/anchor matrices.
+   access. Aim down at a textured, matte surface in good light and sweep the phone slowly over
+   it; the centre marker turns solid green once the surface has been tracked for a moment under
+   motion. Only then does a tap place the apartment (earlier taps are refused with coaching).
    This is an experimental in-tab camera/sensor tracker, not a native-app/Quick Look handoff.
 3. Keep some part of the same surface in view and move slowly; the map grows over the plane, so
    the tapped spot itself may leave the view. Use **Reposicionar**, size and rotation controls.
@@ -160,3 +161,13 @@ and uncover it at the same view; cover again while turning slowly; then send the
 expected outcomes, in order: placement within a few seconds or a clear coaching message; no
 drift or blinking while still; the apartment stays on its spot while the tapped region is out of
 view; a dimmed apartment during the occlusion and the same place afterwards; and a visible receipt.
+
+## Second device diagnostic and scanning stage — 2026-09-07
+
+`SP-C1116A35` on `9afddb4` showed the gyro integrating but its assumed axis mapping wrong on the
+phone (residual 131% at every offset), which disabled prediction and, with it, bridging; see the
+[evidence note](evidence/2026-09-07-second-device-diagnostic.md). The lab now selects the mapping
+online (`metrics.gyro.mapping`, `bestRatio`), bridges with a frozen pose while unvalidated,
+requires a swept, tracked surface before the first tap, keeps the map on reposition and reports
+`metrics.phaseMs` and `metrics.tapsBeforeReady`. Expected next-run signals: `gyro.prediction`
+`active` with a named mapping, fewer/shorter `lossIntervals`, and a green marker before placing.

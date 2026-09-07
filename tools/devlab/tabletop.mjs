@@ -67,6 +67,7 @@ export async function startTabletop({
     frames: 0,
     droppedFrames: 0,
     placements: 0,
+    tapsBeforeReady: 0,
     motionSamples: 0,
     stateFrames: {},
     tracking: { state: "starting" },
@@ -95,6 +96,8 @@ export async function startTabletop({
   let lossStart = null,
     lossReason = "",
     previousMeasured = false,
+    scanReady = false,
+    phase = { pyramidMs: [], flowMs: [], recoveryMs: [] },
     lastGyro = null,
     lastPoseSent = 0;
   const jitterWindow = [],
@@ -150,7 +153,9 @@ export async function startTabletop({
       frames: report.frames,
       droppedFrames: report.droppedFrames,
       placements: report.placements,
+      tapsBeforeReady: report.tapsBeforeReady,
       motionSamples: report.motionSamples,
+      phaseMs: Object.fromEntries(Object.entries(phase).map(([k, v]) => [k, stats(v)])),
       stateFrames: { ...report.stateFrames },
       engineMs: stats(engineTimes),
       roundTripMs: stats(roundTrips),
@@ -587,10 +592,14 @@ export async function startTabletop({
         if (report.trace.length > 300) report.trace.shift();
       }
       if (tracking.gyro) lastGyro = tracking.gyro;
-      const measured = trackedPoseValid(tracking);
+      if (tracking.timings && phase.pyramidMs.length < 18000)
+        for (const key of Object.keys(phase))
+          if (Number.isFinite(tracking.timings[key])) phase[key].push(tracking.timings[key]);
+      const measured = trackedPoseValid(tracking),
+        lossState = ["recovering", "bridging", "lost"].includes(tracking.state);
       // Loss bookkeeping: any frame without a measured pose opens an interval; the
       // first measured pose closes it with duration, reason and visible jump.
-      if (!measured && lossStart === null && previousMeasured) {
+      if (!measured && lossState && lossStart === null && previousMeasured) {
         lossStart = traceTime;
         lossReason = tracking.reason ?? "";
       } else if (measured && lossStart !== null) {
@@ -602,7 +611,7 @@ export async function startTabletop({
             recoveryJumpPx: tracking.recoveryJumpPx ?? null,
           });
         lossStart = null;
-      }
+      } else if (!measured && !lossState) lossStart = null;
       previousMeasured = measured;
       // Stationary jitter: spread of the anchor's image position over one second
       // while the gyro reports almost no rotation. Processing-resolution pixels.
@@ -656,13 +665,44 @@ export async function startTabletop({
         else
           status(
             "bridging",
-            "Perdi a superfície por um instante; seguindo o giroscópio. Volte a apontar para a mesa.",
+            tracking.frozen
+              ? "Perdi a superfície por um instante. Volte a apontar para a mesa."
+              : "Perdi a superfície por um instante; seguindo o giroscópio. Volte a apontar para a mesa.",
             tracking.reason,
           );
+      } else if (tracking.state === "scanning") {
+        // Provisional map: the model stays hidden until the surface is tracked under
+        // motion; the reticle turns solid green when a tap will anchor immediately.
+        root.visible = false;
+        scanReady = !!tracking.surfaceReady;
+        reticle.hidden = false;
+        reticle.textContent = scanReady ? "◎" : "+";
+        reticle.style.color = scanReady ? "#8ef0a8" : "white";
+        const hints = {
+          "waiting-for-sensors": "Segure o celular firme enquanto recebo o movimento.",
+          "sensor-permission-or-data-unavailable":
+            "Não recebi movimento. Confira a permissão no Safari e tente novamente.",
+          "point-down-at-table": "Incline o celular para baixo, apontando para a superfície.",
+          "hold-still": "Segure o celular parado por um instante para eu ler a gravidade.",
+          "insufficient-distributed-texture":
+            "Poucos detalhes aqui. Aponte para uma parte da superfície com manchas ou bordas.",
+        };
+        status(
+          "scanning",
+          scanReady
+            ? "Superfície encontrada. Toque onde quer colocar o apartamento."
+            : (hints[tracking.reason] ??
+                "Mova o celular devagar sobre a superfície, como numa varredura, até o marcador ficar verde."),
+          scanReady ? "surface-ready" : tracking.reason,
+        );
       } else {
         // A bounded display hold bridges one rejected frame; it is never a measured pose.
         root.visible = root.visible && performance.now() - lastTracking <= 120;
         reticle.hidden = root.visible;
+        if (!root.visible) {
+          reticle.textContent = "+";
+          reticle.style.color = "white";
+        }
         const recovering = tracking.state === "recovering" || tracking.state === "lost";
         const messages = {
           "insufficient-distributed-texture":
@@ -690,11 +730,21 @@ export async function startTabletop({
         containedRect(stage.getBoundingClientRect(), video.videoWidth, video.videoHeight),
       );
       if (!point) return;
+      if (lastState === "scanning" && !scanReady) {
+        // Native-style gate: no anchor before the surface has been swept and tracked.
+        report.tapsBeforeReady++;
+        status(
+          "scanning",
+          "Ainda reconhecendo a superfície. Continue movendo o celular devagar sobre ela até o marcador ficar verde.",
+          "sweep-surface",
+        );
+        return;
+      }
       root.visible = false;
       reticle.hidden = false;
       worker.postMessage({ type: "place", point });
       report.placements++;
-      status("placing", "Segure firme enquanto reconheço essa região da mesa.");
+      status("placing", "Colocando o apartamento nesse ponto…");
     });
     const canvas = document.createElement("canvas");
     canvas.width = width;
@@ -781,13 +831,17 @@ export async function startTabletop({
         const t = report.tracking,
           g = t.gyro;
         debug.textContent = [
-          t.state ?? "—",
-          t.reason && t.state !== "tracking" ? t.reason : null,
+          t.state === "scanning"
+            ? t.surfaceReady
+              ? "scanning ✓"
+              : "scanning …"
+            : (t.state ?? "—"),
+          t.reason && t.state !== "tracking" && t.state !== "scanning" ? t.reason : null,
           t.inliers != null
             ? `${t.inliers}/${t.visibleFeatures ?? "?"} pts · mapa ${t.features ?? 0}`
             : null,
           g
-            ? `giro ${g.prediction}${g.residualRatio != null ? ` ${Math.round(g.residualRatio * 100)}%` : ""} · ${Math.round(g.motionDegPerS ?? 0)}°/s`
+            ? `giro ${g.prediction}${g.mapping ? ` ${g.mapping}` : ""}${g.residualRatio != null ? ` ${Math.round(g.residualRatio * 100)}%` : ""} · ${Math.round(g.motionDegPerS ?? 0)}°/s`
             : null,
           roundTrips.length ? `${Math.round(roundTrips.at(-1))} ms` : null,
         ]
@@ -802,7 +856,10 @@ export async function startTabletop({
     }, 1000);
     scope.own(() => clearInterval(watchdog));
     schedule();
-    status("scanning", "Toque numa região com textura da mesa. Evite vidro e superfícies lisas.");
+    status(
+      "scanning",
+      "Aponte para a mesa ou o chão e mova o celular devagar sobre a superfície até o marcador ficar verde.",
+    );
     return {
       dispose,
       snapshot,
@@ -811,7 +868,7 @@ export async function startTabletop({
         root.visible = false;
         reticle.hidden = false;
         worker.postMessage({ type: "reset" });
-        status("scanning", "Toque na mesa para escolher uma nova posição.");
+        status("scanning", "Toque onde quer a nova posição.", "surface-ready");
       },
       setScale(value) {
         if (Number.isFinite(value)) scale = Math.max(0.3, Math.min(3, value));

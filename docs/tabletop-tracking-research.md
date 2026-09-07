@@ -82,6 +82,21 @@ and pose smoothing drops from 45 ms to 25 ms. Diagnostics add loss intervals wit
 stationary jitter (processing-resolution pixels while the gyro reports <3°/s), pose age at render,
 gyro consistency per offset and a live on-screen status line.
 
+### Second device round
+
+The first on-device diagnostics (`SP-85385458`, `SP-C1116A35`) changed two assumptions. iOS
+Safari reports `DeviceMotionEvent.interval` in seconds, so gyro dt now comes from delivery
+timestamps. The derived axis mapping `[-beta, +gamma, +alpha]` disagreed with the visual rotation
+by 131% on the iPhone 16, so the session scores all 48 signed axis permutations times four delivery
+offsets against the visual rotation on moving frames and adopts the agreeing one; prediction is
+`active` only below a 0.5 residual ratio, and while unvalidated a loss is bridged by a frozen pose
+for 0.7 s. A scanning stage now precedes placement: a provisional map starts at the view centre when
+the phone aims down steadily, the surface is ready after 20 tracked frames with ≥50 features and
+measurable motion, and a tap anchors through the current homography inside that map; reposition
+keeps the map. The withheld pose during confirmation no longer rolls back the flow reference, a pose
+within 0.2 rad / 0.15 of the last one is accepted at once after loss, and coarse recovery is bounded
+to alternate lost frames, 16 features and a 9×9×3 grid (~2 ms per lost frame in Node).
+
 ## Evidence and remaining limits
 
 Deterministic tests cover a pan that moves the tapped region completely out of view and back, a

@@ -29,7 +29,8 @@ self.onmessage = async ({ data }) => {
         trackProcessorWorker: typeof MediaStreamTrackProcessor === "function",
       });
     } else if (data.type === "reset") {
-      if (tracker) tracker = new TrackingSession(width, height);
+      // Reposition keeps the plane map and gyro calibration; only the anchor is dropped.
+      tracker?.unplace();
     } else if (data.type === "motion") {
       tracker?.motion(data.samples ?? []);
     } else if (data.type === "place") {

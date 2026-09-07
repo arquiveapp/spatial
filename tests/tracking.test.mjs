@@ -105,34 +105,49 @@ test("tap waits for gravity; visual tracking survives sensor delivery gaps", () 
   assert.equal(afterGap.motionAgeMs, 1480);
   assert(Math.hypot(...afterGap.translationOverDistance) < 1e-6);
 });
-test("missing gravity expires placement; occlusion retains and recovers the same anchor", () => {
+test("missing gravity expires placement; occlusion holds briefly, then recovers the same anchor", () => {
   const session = new TrackingSession(360, 640),
     im = texture(360, 640);
   session.place([0.5, 0.5]);
   session.frame(im, 100);
   assert.equal(session.frame(im, 3101).reason, "sensor-permission-or-data-unavailable");
-  assert.equal(session.frame(im, 3200).state, "unplaced");
+  // Without an anchor the session scans for a surface; that still needs gravity.
+  const scanning = session.frame(im, 3200);
+  assert.equal(scanning.state, "scanning");
+  assert.equal(scanning.reason, "waiting-for-sensors");
   session.motion([{ time: 3210, gravity }]);
   session.place([0.5, 0.5]);
   const placed = session.frame(im, 3220);
   assert.equal(placed.state, "tracking");
   const blank = new Uint8Array(360 * 640);
   for (let i = 0; i < 8; i++) {
-    const lost = session.frame(blank, 3300 + i * 100);
-    assert.equal(lost.state, "recovering");
+    const at = 3300 + i * 100,
+      lost = session.frame(blank, at);
     assert.equal(lost.referenceRetained, true);
-    assert.equal(lost.viewMatrix, undefined);
+    if (at - 3220 <= 700) {
+      // Gyro mapping is unvalidated here, so the hold is a frozen, flagged prediction.
+      assert.equal(lost.state, "bridging");
+      assert.equal(lost.frozen, true);
+      assert.deepEqual(lost.anchorMatrix, placed.anchorMatrix);
+    } else {
+      assert.equal(lost.state, "recovering");
+      assert.equal(lost.viewMatrix, undefined);
+    }
   }
-  assert.equal(session.frame(im, 4200).reason, "confirming-reference");
-  const recovered = session.frame(im, 4300);
+  // The same view returns: consistent with the last pose, accepted at once.
+  const recovered = session.frame(im, 4200);
   assert.equal(recovered.state, "tracking");
   assert.deepEqual(recovered.anchorMatrix, placed.anchorMatrix);
   assert.equal(recovered.recoveries, 1);
-  session.motion([{ time: 4400, gravity }]);
+  assert.equal(session.frame(im, 4300).state, "tracking");
+  // Re-tapping on the tracked map anchors through the homography: no new reference.
+  session.motion([{ time: 4310, gravity }]);
+  const reference = session.features.reference;
   session.place([0.4, 0.6]);
-  const repositioned = session.frame(im, 4410);
+  const repositioned = session.frame(im, 4330);
   assert.equal(repositioned.state, "tracking");
   assert.notDeepEqual(repositioned.anchorMatrix, placed.anchorMatrix);
+  assert.equal(session.features.reference, reference);
 });
 
 test("synthetic tilted-plane image replay fits gyro rotation plus camera translation", () => {

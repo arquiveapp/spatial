@@ -4,7 +4,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { FeaturePlane, MAX_FEATURES, project } from "../tools/devlab/feature-plane.mjs";
-import { TrackingSession, identity, integrate } from "../tools/devlab/patch.mjs";
+import {
+  TrackingSession,
+  identity,
+  integrate,
+  MAPPINGS,
+  mappingLabel,
+} from "../tools/devlab/patch.mjs";
 import { intrinsics, rotationHomography, relativeAngle } from "../tools/devlab/tracking-math.mjs";
 
 const width = 240,
@@ -178,7 +184,8 @@ test("features added on a moving foreground object are pruned and the plane keep
   assert.ok(tracker.features.length <= MAX_FEATURES);
 });
 
-test("session seeds tracking with gyro rotation and bridges a short visual gap without moving the anchor", () => {
+// Shared 360x640 synthetic session: a large floor viewed through a homography.
+function sessionFixture() {
   const w = 360,
     h = 640,
     camera = intrinsics(w, h),
@@ -213,56 +220,57 @@ test("session seeds tracking with gyro rotation and bridges a short visual gap w
     { time: 16, rate: { alpha: 0, beta: 0, gamma: 0 }, gravity, interval: 16 },
     { time: 32, rate: { alpha: 0, beta: 0, gamma: 0 }, gravity, interval: 16 },
   ]);
+  return { w, h, camera, session, frameAt, gravity };
+}
+// Rotate the synthetic camera for `frames` frames at device `rate`, delivering two
+// gyro samples per frame; the image follows the true mapping given.
+function spin(fixture, state, rate, frames, mapping = undefined) {
+  const { session, camera, frameAt, gravity } = fixture;
+  let last;
+  for (let i = 0; i < frames; i++) {
+    session.motion([
+      { time: state.time + 16, rate, gravity, interval: 16 },
+      { time: state.time + 32, rate, gravity, interval: 16 },
+    ]);
+    state.time += 33;
+    state.R = integrate(state.R, rate, 0.033, mapping);
+    last = session.frame(frameAt(rotationHomography(camera, state.R)), state.time);
+  }
+  return last;
+}
+
+test("session validates the gyro mapping, predicts flow, and bridges a short visual gap without moving the anchor", () => {
+  const fixture = sessionFixture(),
+    { w, h, camera, session, frameAt, gravity } = fixture;
   session.place([0.5, 0.5]);
   const placed = session.frame(frameAt(identity()), 40);
   assert.equal(placed.state, "tracking", placed.reason);
-  // A pure yaw of 0.35 rad/s around the optical axis for one 33 ms frame: 0.66
-  // degrees, i.e. only about 3 px at the image edge; then a fast frame (20 deg/s).
-  const yaw = (degPerS, dtMs) =>
-    integrate(identity(), { alpha: degPerS, beta: 0, gamma: 0 }, dtMs / 1000);
-  let time = 40,
-    R = identity();
-  const spin = (degPerS, frames) => {
-    let last;
-    for (let i = 0; i < frames; i++) {
-      const samples = [];
-      for (let k = 1; k <= 2; k++)
-        samples.push({
-          time: time + (k * 33) / 2,
-          rate: { alpha: degPerS, beta: 0, gamma: 0 },
-          gravity,
-          interval: 16.5,
-        });
-      session.motion(samples);
-      time += 33;
-      R = integrate(R, { alpha: degPerS, beta: 0, gamma: 0 }, 0.033);
-      last = session.frame(frameAt(rotationHomography(camera, R)), time);
-    }
-    return last;
-  };
-  let result = spin(20, 8);
+  const state = { time: 40, R: identity() };
+  // Mixed-axis rotation so exactly one signed permutation agrees with the image.
+  let result = spin(fixture, state, { alpha: 14, beta: -9, gamma: 11 }, 36);
   assert.equal(result.state, "tracking", result.reason);
-  assert.equal(result.gyro.prediction === "disabled-inconsistent", false);
-  const yawFrame = yaw(20, 33);
-  assert.ok(yawFrame.every(Number.isFinite));
-  // Occlusion: blank frames while the phone keeps panning; the model is bridged
-  // (predicted, flagged) for a bounded time, then hidden, never re-anchored.
+  assert.equal(result.gyro.prediction, "active");
+  assert.equal(result.gyro.mapping, "-b,+g,+a");
+  assert.ok(result.gyro.residualRatio < 0.5, `ratio ${result.gyro.residualRatio}`);
+  // Occlusion: blank frames while the phone keeps panning; the model is bridged by the
+  // validated gyro (not frozen) for a bounded time, then hidden, never re-anchored.
   const anchor = [...result.anchorMatrix];
   const blank = new Uint8Array(w * h).fill(120);
   const pan = { alpha: 0, beta: 0, gamma: 8 };
   const states = [];
   for (let i = 0; i < 60; i++) {
     session.motion([
-      { time: time + 16, rate: pan, gravity, interval: 16 },
-      { time: time + 32, rate: pan, gravity, interval: 16 },
+      { time: state.time + 16, rate: pan, gravity, interval: 16 },
+      { time: state.time + 32, rate: pan, gravity, interval: 16 },
     ]);
-    time += 33;
-    R = integrate(R, pan, 0.033);
-    const lost = session.frame(blank, time);
+    state.time += 33;
+    state.R = integrate(state.R, pan, 0.033);
+    const lost = session.frame(blank, state.time);
     states.push(lost.state);
     assert.deepEqual(lost.anchorMatrix ?? anchor, anchor);
     if (lost.state === "bridging") {
       assert.equal(lost.predicted, true);
+      assert.equal(lost.frozen, false);
       assert.ok(lost.bridgedMs <= 1500);
       assert.ok(Array.isArray(lost.viewMatrix));
     }
@@ -277,31 +285,94 @@ test("session seeds tracking with gyro rotation and bridges a short visual gap w
   );
   // The surface returns where the gyro predicted it: accepted at once, same anchor.
   session.motion([
-    { time: time + 16, rate: { alpha: 0, beta: 0, gamma: 0 }, gravity, interval: 16 },
+    { time: state.time + 16, rate: { alpha: 0, beta: 0, gamma: 0 }, gravity, interval: 16 },
   ]);
-  time += 33;
-  const back = session.frame(frameAt(rotationHomography(camera, R)), time);
+  state.time += 33;
+  const back = session.frame(frameAt(rotationHomography(camera, state.R)), state.time);
   assert.equal(back.state, "tracking", back.reason);
   assert.deepEqual(back.anchorMatrix, anchor);
   assert.equal(back.recoveries, 1);
   assert.equal(back.recoveryJumpPx, null);
-  // A short occlusion stays bridged throughout; the gyro-predicted position and
-  // the reacquired visual position agree within a few pixels, so no visible jump.
+  // A short occlusion stays bridged throughout; the gyro-predicted position and the
+  // reacquired visual position agree within a few pixels, so no visible jump.
   for (let i = 0; i < 15; i++) {
     session.motion([
-      { time: time + 16, rate: pan, gravity, interval: 16 },
-      { time: time + 32, rate: pan, gravity, interval: 16 },
+      { time: state.time + 16, rate: pan, gravity, interval: 16 },
+      { time: state.time + 32, rate: pan, gravity, interval: 16 },
     ]);
-    time += 33;
-    R = integrate(R, pan, 0.033);
-    assert.equal(session.frame(blank, time).state, "bridging");
+    state.time += 33;
+    state.R = integrate(state.R, pan, 0.033);
+    assert.equal(session.frame(blank, state.time).state, "bridging");
   }
-  time += 33;
-  const again = session.frame(frameAt(rotationHomography(camera, R)), time);
+  state.time += 33;
+  const again = session.frame(frameAt(rotationHomography(camera, state.R)), state.time);
   assert.equal(again.state, "tracking", again.reason);
   assert.equal(again.recoveries, 2);
   assert.ok(again.recoveryJumpPx < 12, `jump ${again.recoveryJumpPx}`);
-  assert.ok(back.gyro.frames > 0);
+});
+
+test("gyro axis mapping is selected from agreement with the visual rotation, not assumed", () => {
+  // A device whose rates follow a different signed permutation than the derivation.
+  const trueMapping = MAPPINGS.find((m) => mappingLabel(m) === "+b,-g,-a");
+  const fixture = sessionFixture(),
+    { session, frameAt } = fixture;
+  session.place([0.5, 0.5]);
+  assert.equal(session.frame(frameAt(identity()), 40).state, "tracking");
+  const state = { time: 40, R: identity() };
+  const result = spin(fixture, state, { alpha: 14, beta: -9, gamma: 11 }, 36, trueMapping);
+  assert.equal(result.state, "tracking", result.reason);
+  assert.equal(result.gyro.prediction, "active");
+  assert.equal(result.gyro.mapping, "+b,-g,-a");
+  assert.ok(result.gyro.residualRatio < 0.5, `ratio ${result.gyro.residualRatio}`);
+});
+
+test("scanning builds a provisional map, offers placement after a swept surface, and anchors the tap through the homography", () => {
+  const fixture = sessionFixture(),
+    { w, h, session, frameAt, gravity } = fixture;
+  let time = 40;
+  const first = session.frame(frameAt(identity()), time);
+  assert.equal(first.state, "scanning");
+  assert.equal(first.reason, "reference-established");
+  assert.equal(first.surfaceReady, false);
+  // Sweep: the view slides over the floor a few pixels per frame.
+  const still = { alpha: 0, beta: 0, gamma: 0 },
+    slide = (i) => [1, 0, -4 * i, 0, 1, 2 * i, 0, 0, 1];
+  let last;
+  for (let i = 1; i <= 24; i++) {
+    session.motion([{ time: time + 16, rate: still, gravity, interval: 16 }]);
+    time += 33;
+    last = session.frame(frameAt(slide(i)), time);
+    assert.equal(last.state, "scanning", last.reason);
+  }
+  assert.equal(last.surfaceReady, true);
+  assert.equal(last.reason, "surface-ready");
+  assert.ok(last.features >= 50);
+  // The tap anchors through the homography of the frame the user saw (the last
+  // accepted one); on the next frame the anchor has moved with the view by exactly one
+  // frame of motion (-4, +2), i.e. it stays on the tapped floor point.
+  session.place([0.5, 0.62]);
+  time += 33;
+  const placed = session.frame(frameAt(slide(25)), time);
+  assert.equal(placed.state, "tracking", placed.reason);
+  assert.ok(
+    Math.hypot(placed.screen[0] - (0.5 * w - 4), placed.screen[1] - (0.62 * h + 2)) < 2,
+    `anchor at ${placed.screen}`,
+  );
+  // Reposition keeps the mature map: scanning is ready at once, and the next tap
+  // anchors elsewhere without a new reference.
+  const reference = session.features.reference;
+  session.unplace();
+  time += 33;
+  const scan = session.frame(frameAt(slide(26)), time);
+  assert.equal(scan.state, "scanning");
+  assert.equal(scan.surfaceReady, true);
+  session.place([0.3, 0.5]);
+  time += 33;
+  const again = session.frame(frameAt(slide(27)), time);
+  assert.equal(again.state, "tracking", again.reason);
+  assert.notDeepEqual(again.anchorMatrix, placed.anchorMatrix);
+  assert.equal(session.features.reference, reference);
+  assert.ok(Math.hypot(again.screen[0] - (0.3 * w - 4), again.screen[1] - (0.5 * h + 2)) < 2);
 });
 
 test("gyro integrates real rotation whether the interval arrives in ms or iOS seconds", () => {

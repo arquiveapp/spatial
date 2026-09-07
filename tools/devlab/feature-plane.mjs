@@ -479,6 +479,7 @@ export class FeaturePlane {
       visible: this.reference ? this.visible().length : 0,
       added: this.added,
       failures: this.failures,
+      timings: this.timings ?? null,
       reprojectionError: matches.length
         ? Math.sqrt(
             matches.reduce((sum, m) => sum + error(this.homography, m) ** 2, 0) / matches.length,
@@ -649,18 +650,21 @@ export class FeaturePlane {
     if (jh[0] * jh[3] - jh[1] * jh[2] <= 0) return null;
     return fitResult;
   }
-  // Lost motion can exceed LK's capture radius. Rank a fixed 13x13x3 grid (8 px
-  // steps, ±48 px) around the gyro-predicted seed using each feature's coarse
-  // creation template, then refine only two seeds through the same acceptance
-  // gates. No new reference is established.
+  // Lost motion can exceed LK's capture radius. Rank a 9x9x3 grid (12 px steps,
+  // ±48 px) around the gyro-predicted seed using at most 16 features' coarse
+  // creation templates, then refine only two seeds through the same acceptance
+  // gates. Bounded so a long loss cannot starve the frame rate (the first device
+  // run spent most lost frames here). No new reference is established.
   recoverySeeds(current, seed) {
     const candidates = [],
       center = [this.width / 2, this.height / 2],
-      features = this.visible(seed, -64).filter((_, i) => i % 2 === 0);
+      pool = this.visible(seed, -64),
+      stride = Math.max(1, Math.ceil(pool.length / 16)),
+      features = pool.filter((_, i) => i % stride === 0);
     if (features.length < 6) return [];
     for (const scale of [0.85, 1, 1.15])
-      for (let dy = -48; dy <= 48; dy += 8)
-        for (let dx = -48; dx <= 48; dx += 8) {
+      for (let dy = -48; dy <= 48; dy += 12)
+        for (let dx = -48; dx <= 48; dx += 12) {
           const h = [...seed];
           for (let j = 0; j < 3; j++) {
             h[j] = scale * seed[j] + ((1 - scale) * center[0] + dx) * seed[6 + j];
@@ -788,13 +792,17 @@ export class FeaturePlane {
       this.release(this.retired);
       this.retired = null;
     }
-    const current = this.acquire().build(luma);
+    const t0 = performance.now(),
+      current = this.acquire().build(luma),
+      t1 = performance.now();
     this.frame++;
     const seed = compose(delta, this.homography);
     let fitResult = this.attempt(this.previous, this.homography, current, seed);
     if (!fitResult && this.previous !== this.reference)
       fitResult = this.attempt(this.reference, IDENTITY, current, seed);
-    if (!fitResult && this.failures >= 2) {
+    const t2 = performance.now();
+    // Coarse recovery on alternate lost frames only, so a long loss keeps the rate up.
+    if (!fitResult && this.failures >= 2 && this.failures % 2 === 1) {
       for (const candidate of this.recoverySeeds(current, seed)) {
         fitResult =
           this.attempt(this.reference, IDENTITY, current, candidate) ??
@@ -802,6 +810,12 @@ export class FeaturePlane {
         if (fitResult) break;
       }
     }
+    const t3 = performance.now();
+    this.timings = {
+      pyramidMs: Math.round((t1 - t0) * 10) / 10,
+      flowMs: Math.round((t2 - t1) * 10) / 10,
+      recoveryMs: Math.round((t3 - t2) * 10) / 10,
+    };
     if (!fitResult) {
       this.failures++;
       this.added = 0;
